@@ -7,3 +7,9 @@ Backend: Nest.js
 Database: PostgreSQL
 
 CI/CD： Docker
+
+Turborepo
+Prisma
+GraphQL&RestAPI
+Authentication &Authorization
+Google OAuth Authentication
