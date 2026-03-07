@@ -1,0 +1,210 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum WorkspaceRole {
+  OWNER
+  ADMIN
+  MEMBER
+}
+
+enum ChannelType {
+  PUBLIC
+  PRIVATE
+}
+
+enum MessageType {
+  TEXT
+  SYSTEM
+  FILE
+}
+
+enum NotificationType {
+  MENTION
+}
+
+model AppStateMeta {
+  id        String   @id
+  version   Int      @default(1)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model User {
+  id                 String                @id
+  email              String                @unique
+  passwordHash       String
+  displayName        String
+  createdAt          DateTime
+  updatedAt          DateTime
+  sessions           Session[]
+  memberships        WorkspaceMembership[]
+  channelMemberships ChannelMembership[]
+  sentInvites        Invitation[]          @relation("InvitationSender")
+  messages           Message[]
+  presence           Presence?
+}
+
+model Session {
+  id                String   @id
+  userId            String
+  refreshTokenHash  String
+  userAgent         String?
+  ipAddress         String?
+  expiresAt         DateTime
+  revokedAt         DateTime?
+  createdAt         DateTime
+  updatedAt         DateTime
+  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model Workspace {
+  id           String                @id
+  name         String
+  slug         String                @unique
+  createdById  String
+  createdAt    DateTime
+  updatedAt    DateTime
+  memberships  WorkspaceMembership[]
+  invitations  Invitation[]
+  channels     Channel[]
+}
+
+model WorkspaceMembership {
+  id           String        @id
+  workspaceId  String
+  userId       String
+  role         WorkspaceRole @default(MEMBER)
+  joinedAt     DateTime
+  workspace    Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, userId])
+  @@index([userId])
+}
+
+model Invitation {
+  id             String        @id
+  workspaceId    String
+  email          String
+  token          String        @unique
+  role           WorkspaceRole @default(MEMBER)
+  invitedById    String
+  expiresAt      DateTime
+  acceptedAt     DateTime?
+  createdAt      DateTime
+  updatedAt      DateTime
+  workspace      Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  invitedBy      User          @relation("InvitationSender", fields: [invitedById], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId, email])
+}
+
+model Channel {
+  id             String             @id
+  workspaceId    String
+  name           String
+  description    String?
+  type           ChannelType        @default(PUBLIC)
+  createdById    String
+  createdAt      DateTime
+  updatedAt      DateTime
+  workspace      Workspace          @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  memberships    ChannelMembership[]
+  messages       Message[]
+
+  @@unique([workspaceId, name])
+  @@index([workspaceId, type])
+}
+
+model ChannelMembership {
+  id         String   @id
+  workspaceId String
+  channelId   String
+  userId      String
+  addedById   String
+  joinedAt    DateTime
+  channel     Channel  @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([channelId, userId])
+  @@index([userId])
+  @@index([workspaceId])
+}
+
+model ChannelReadState {
+  id         String   @id
+  workspaceId String
+  channelId   String
+  userId      String
+  lastReadAt  DateTime
+  updatedAt   DateTime
+
+  @@unique([channelId, userId])
+  @@index([workspaceId, userId])
+}
+
+model Message {
+  id             String       @id
+  workspaceId    String
+  channelId      String
+  senderId       String
+  type           MessageType  @default(TEXT)
+  content        String
+  createdAt      DateTime
+  updatedAt      DateTime
+  deletedAt      DateTime?
+  channel        Channel      @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  sender         User         @relation(fields: [senderId], references: [id], onDelete: Cascade)
+  attachments    FileAttachment[]
+
+  @@index([channelId, createdAt(sort: Desc)])
+  @@index([workspaceId, createdAt(sort: Desc)])
+}
+
+model FileAttachment {
+  id           String   @id
+  messageId    String?
+  workspaceId  String
+  uploaderId   String
+  storageKey   String   @unique
+  originalName String
+  mimeType     String
+  sizeBytes    Int
+  url          String
+  createdAt    DateTime
+  message      Message? @relation(fields: [messageId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId])
+}
+
+model Notification {
+  id          String           @id
+  workspaceId String
+  userId      String
+  type        NotificationType
+  title       String
+  body        String
+  channelId   String
+  messageId   String
+  readAt      DateTime?
+  createdAt   DateTime
+
+  @@index([userId, createdAt(sort: Desc)])
+  @@index([workspaceId, userId])
+}
+
+model Presence {
+  userId        String   @id
+  status        String
+  lastSeenAt    DateTime
+  updatedAt     DateTime @updatedAt
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}

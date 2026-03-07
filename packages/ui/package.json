@@ -1,0 +1,13 @@
+{
+  "name": "@worknext/ui",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "echo \"No UI build task yet\"",
+    "lint": "echo \"No UI lint task yet\"",
+    "typecheck": "echo \"No UI typecheck task yet\"",
+    "test": "echo \"No UI tests yet\"",
+    "format": "echo \"No UI format task yet\""
+  }
+}

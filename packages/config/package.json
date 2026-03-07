@@ -1,0 +1,13 @@
+{
+  "name": "@worknext/config",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "echo \"No config build task yet\"",
+    "lint": "echo \"No config lint task yet\"",
+    "typecheck": "echo \"No config typecheck task yet\"",
+    "test": "echo \"No config tests yet\"",
+    "format": "echo \"No config format task yet\""
+  }
+}

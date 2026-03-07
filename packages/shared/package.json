@@ -1,0 +1,19 @@
+{
+  "name": "@worknext/shared",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "scripts": {
+    "build": "tsc --noEmit",
+    "lint": "echo \"No shared lint task yet\"",
+    "typecheck": "tsc --noEmit",
+    "test": "echo \"No shared tests yet\"",
+    "format": "prettier --check \"src/**/*.ts\""
+  },
+  "devDependencies": {
+    "prettier": "^3.5.3",
+    "typescript": "^5.8.2"
+  }
+}
