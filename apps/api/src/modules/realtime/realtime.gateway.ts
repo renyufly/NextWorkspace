@@ -11,8 +11,12 @@ import {
 import { JwtService } from '@nestjs/jwt';
 import { Server, Socket } from 'socket.io';
 
+import type { RealtimeSyncSummary } from '@worknext/shared';
+
 import { ChannelsService } from '../channels/channels.service.js';
 import { WorkspacesService } from '../workspaces/workspaces.service.js';
+import { PresenceService } from './presence.service.js';
+import { RealtimeAdapterService } from './realtime-adapter.service.js';
 import { RealtimeService } from './realtime.service.js';
 
 type SocketUser = {
@@ -46,9 +50,12 @@ export class RealtimeGateway implements OnGatewayInit, OnGatewayConnection, OnGa
     private readonly workspacesService: WorkspacesService,
     private readonly channelsService: ChannelsService,
     private readonly realtimeService: RealtimeService,
+    private readonly realtimeAdapterService: RealtimeAdapterService,
+    private readonly presenceService: PresenceService,
   ) {}
 
   afterInit(server: Server) {
+    void this.realtimeAdapterService.configure(server);
     this.realtimeService.setServer(server);
   }
 
@@ -70,17 +77,20 @@ export class RealtimeGateway implements OnGatewayInit, OnGatewayConnection, OnGa
       };
       client.data.joinedWorkspaces = new Set();
       client.data.joinedChannels = new Set();
+      void client.join(this.realtimeService.userRoom(payload.sub));
     } catch {
       client.disconnect();
     }
   }
 
-  handleDisconnect(client: RealtimeSocket) {
+  async handleDisconnect(client: RealtimeSocket) {
     const user = client.data.user;
 
     if (!user) {
       return;
     }
+
+    await this.presenceService.recordDisconnect(user.userId);
 
     for (const workspaceId of client.data.joinedWorkspaces ?? []) {
       this.realtimeService.emitPresence(workspaceId, {
@@ -102,6 +112,7 @@ export class RealtimeGateway implements OnGatewayInit, OnGatewayConnection, OnGa
     await this.workspacesService.assertMembership(user.userId, payload.workspaceId);
     await client.join(this.realtimeService.workspaceRoom(payload.workspaceId));
     client.data.joinedWorkspaces?.add(payload.workspaceId);
+    await this.presenceService.recordHeartbeat(user.userId);
 
     this.realtimeService.emitPresence(payload.workspaceId, {
       workspaceId: payload.workspaceId,
@@ -154,6 +165,7 @@ export class RealtimeGateway implements OnGatewayInit, OnGatewayConnection, OnGa
   ) {
     const user = this.getUser(client);
     await this.workspacesService.assertMembership(user.userId, payload.workspaceId);
+    await this.presenceService.recordHeartbeat(user.userId);
 
     this.realtimeService.emitPresence(payload.workspaceId, {
       workspaceId: payload.workspaceId,
@@ -164,6 +176,26 @@ export class RealtimeGateway implements OnGatewayInit, OnGatewayConnection, OnGa
     });
 
     return { success: true };
+  }
+
+  @SubscribeMessage('state:sync')
+  async syncState(
+    @ConnectedSocket() client: RealtimeSocket,
+    @MessageBody() payload: { workspaceId: string; channelId?: string | null },
+  ): Promise<RealtimeSyncSummary> {
+    const user = this.getUser(client);
+    await this.workspacesService.assertMembership(user.userId, payload.workspaceId);
+    await this.presenceService.recordHeartbeat(user.userId);
+
+    const summary: RealtimeSyncSummary = {
+      workspaceId: payload.workspaceId,
+      channelId: payload.channelId ?? null,
+      onlineUserIds: await this.presenceService.listOnlineUserIds(payload.workspaceId),
+      generatedAt: new Date().toISOString(),
+    };
+
+    this.realtimeService.emitStateReconciled(user.userId, summary);
+    return summary;
   }
 
   private getUser(client: RealtimeSocket) {

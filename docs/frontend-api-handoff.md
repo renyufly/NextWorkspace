@@ -239,6 +239,10 @@ All protected endpoints require:
 
 `GET /health`
 
+`GET /health/live`
+
+`GET /health/ready`
+
 Response:
 
 ```json
@@ -249,16 +253,34 @@ Response:
   "mode": "local",
   "storagePath": "/home/reny/worknext/apps/api/.data/worknext.json",
   "checks": {
-    "storage": "up"
+    "storage": "up",
+    "database": "disabled",
+    "redis": "disabled",
+    "queues": "disabled",
+    "realtime": "disabled"
   },
+  "requiredChecks": ["storage"],
+  "optionalChecks": ["database", "redis", "queues", "realtime"],
   "metrics": {
     "users": 2,
     "workspaces": 1,
     "channels": 1,
     "messages": 12
+  },
+  "features": {
+    "redisAdapter": false,
+    "bullmq": false
+  },
+  "issues": {
+    "required": [],
+    "optional": []
   }
 }
 ```
+
+`GET /health/live` returns process liveness only.
+
+`GET /health/ready` returns readiness and uses HTTP `503` when a required dependency is unavailable.
 
 ### 5.2 Auth
 

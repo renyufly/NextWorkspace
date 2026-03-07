@@ -8,6 +8,7 @@ import {
 import { randomBytes, randomUUID } from 'node:crypto';
 
 import { createUniqueSlug } from '../../common/slugify.js';
+import { AuditService } from '../audit/audit.service.js';
 import {
   type LocalChannelRecord,
   type LocalInvitationRecord,
@@ -26,7 +27,10 @@ import type { UpdateWorkspaceDto } from './dto/update-workspace.dto.js';
 
 @Injectable()
 export class WorkspacesService {
-  constructor(private readonly localStoreService: LocalStoreService) {}
+  constructor(
+    private readonly localStoreService: LocalStoreService,
+    private readonly auditService: AuditService,
+  ) {}
 
   async listForUser(userId: string) {
     const state = await this.localStoreService.readState();
@@ -40,77 +44,20 @@ export class WorkspacesService {
           return null;
         }
 
-        return {
-          id: workspace.id,
-          name: workspace.name,
-          slug: workspace.slug,
-          role: membership.role,
-          createdAt: workspace.createdAt,
-          updatedAt: workspace.updatedAt,
-        };
+        return this.serializeWorkspaceSummary(state, workspace, membership.role);
       })
       .filter((workspace): workspace is NonNullable<typeof workspace> => workspace !== null)
       .sort((left, right) => left.name.localeCompare(right.name));
   }
 
   async create(userId: string, dto: CreateWorkspaceDto) {
-    const now = new Date().toISOString();
+    return this.localStoreService.updateState((state) =>
+      this.createWorkspace(state, userId, dto.name, dto.organizationId ?? null),
+    );
+  }
 
-    return this.localStoreService.updateState((state) => {
-      const user = state.users.find((candidate) => candidate.id === userId);
-
-      if (!user) {
-        throw new ForbiddenException('Current user does not exist.');
-      }
-
-      const slug = createUniqueSlug(
-        dto.name,
-        state.workspaces.map((workspace) => workspace.slug),
-      );
-
-      const workspace: LocalWorkspaceRecord = {
-        id: randomUUID(),
-        name: dto.name.trim(),
-        slug,
-        createdById: userId,
-        createdAt: now,
-        updatedAt: now,
-      };
-      const membership: LocalWorkspaceMembershipRecord = {
-        id: randomUUID(),
-        workspaceId: workspace.id,
-        userId,
-        role: 'OWNER',
-        joinedAt: now,
-      };
-      const generalChannel: LocalChannelRecord = {
-        id: randomUUID(),
-        workspaceId: workspace.id,
-        name: 'general',
-        description: 'Default team channel',
-        type: 'PUBLIC',
-        createdById: userId,
-        createdAt: now,
-        updatedAt: now,
-      };
-
-      if (state.workspaces.some((candidate) => candidate.slug === workspace.slug)) {
-        throw new ConflictException('A workspace with that slug already exists.');
-      }
-
-      state.workspaces.push(workspace);
-      state.memberships.push(membership);
-      state.channels.push(generalChannel);
-
-      return {
-        id: workspace.id,
-        name: workspace.name,
-        slug: workspace.slug,
-        role: membership.role,
-        createdAt: workspace.createdAt,
-        updatedAt: workspace.updatedAt,
-      };
-    });
+  async createInOrganization(userId: string, organizationId: string, dto: CreateWorkspaceDto) {
+    return this.localStoreService.updateState((state) => this.createWorkspace(state, userId, dto.name, organizationId));
   }
 
   async update(userId: string, workspaceId: string, dto: UpdateWorkspaceDto) {
@@ -125,6 +72,7 @@ export class WorkspacesService {
 
       if (dto.name) {
         const trimmedName = dto.name.trim();
+        const previousName = workspace.name;
         const slug = createUniqueSlug(
           trimmedName,
           state.workspaces.filter((w) => w.id !== workspaceId).map((w) => w.slug),
@@ -135,15 +83,19 @@ export class WorkspacesService {
       }
 
       workspace.updatedAt = new Date().toISOString();
+      this.auditService.append(state, {
+        workspaceId,
+        actorUserId: userId,
+        action: 'WORKSPACE_UPDATED',
+        entityType: 'WORKSPACE',
+        entityId: workspace.id,
+        entityLabel: workspace.name,
+        metadata: {
+          slug: workspace.slug,
+        },
+      });
 
-      return {
-        id: workspace.id,
-        name: workspace.name,
-        slug: workspace.slug,
-        role: membership.role,
-        createdAt: workspace.createdAt,
-        updatedAt: workspace.updatedAt,
-      };
+      return this.serializeWorkspaceSummary(state, workspace, membership.role);
     });
   }
 
@@ -225,6 +177,18 @@ export class WorkspacesService {
       };
 
       state.invitations.push(invitation);
+      this.auditService.append(state, {
+        workspaceId,
+        actorUserId: userId,
+        action: 'INVITATION_CREATED',
+        entityType: 'INVITATION',
+        entityId: invitation.id,
+        entityLabel: normalizedEmail,
+        metadata: {
+          email: normalizedEmail,
+          role: invitation.role,
+        },
+      });
 
       return this.serializeInvitation(state, invitation);
     });
@@ -264,6 +228,18 @@ export class WorkspacesService {
       }
 
       state.invitations = state.invitations.filter((candidate) => candidate.id !== invitationId);
+      this.auditService.append(state, {
+        workspaceId,
+        actorUserId: userId,
+        action: 'INVITATION_REVOKED',
+        entityType: 'INVITATION',
+        entityId: invitation.id,
+        entityLabel: invitation.email,
+        metadata: {
+          email: invitation.email,
+          role: invitation.role,
+        },
+      });
 
       return { success: true };
     });
@@ -315,17 +291,24 @@ export class WorkspacesService {
       invitation.acceptedAt = now;
       invitation.updatedAt = now;
       state.memberships.push(membership);
+      this.auditService.append(state, {
+        workspaceId: invitation.workspaceId,
+        actorUserId: user.userId,
+        action: 'INVITATION_ACCEPTED',
+        entityType: 'INVITATION',
+        entityId: invitation.id,
+        entityLabel: invitation.email,
+        targetUserId: user.userId,
+        metadata: {
+          role: invitation.role,
+        },
+        createdAt: now,
+      });
 
       const workspace = this.getWorkspaceOrThrow(state, invitation.workspaceId);
+      this.reconcileOrganizationMembership(state, workspace.organizationId, user.userId);
 
-      return {
-        id: workspace.id,
-        name: workspace.name,
-        slug: workspace.slug,
-        role: membership.role,
-        createdAt: workspace.createdAt,
-        updatedAt: workspace.updatedAt,
-      };
+      return this.serializeWorkspaceSummary(state, workspace, membership.role);
     });
   }
 
@@ -338,19 +321,36 @@ export class WorkspacesService {
     return this.localStoreService.updateState((state) => {
       const actorMembership = this.getMembershipOrThrow(state, actorUserId, workspaceId);
       const targetMembership = this.getMembershipOrThrow(state, memberUserId, workspaceId);
+      const workspace = this.getWorkspaceOrThrow(state, workspaceId);
 
       if (actorUserId === memberUserId) {
         throw new BadRequestException('Use a different account to change your own role.');
       }
 
       this.assertCanManageRole(actorMembership.role, targetMembership.role, dto.role);
+      const previousRole = targetMembership.role;
       targetMembership.role = dto.role;
+  this.reconcileOrganizationMembership(state, workspace.organizationId, memberUserId);
 
       const targetUser = state.users.find((candidate) => candidate.id === memberUserId);
 
       if (!targetUser) {
         throw new NotFoundException('Workspace member user not found.');
       }
+
+      this.auditService.append(state, {
+        workspaceId,
+        actorUserId: actorUserId,
+        action: 'MEMBER_ROLE_UPDATED',
+        entityType: 'WORKSPACE_MEMBER',
+        entityId: `${workspaceId}:${memberUserId}`,
+        entityLabel: targetUser.displayName,
+        targetUserId: memberUserId,
+        metadata: {
+          previousRole,
+          nextRole: dto.role,
+        },
+      });
 
       return {
         userId: targetUser.id,
@@ -367,6 +367,7 @@ export class WorkspacesService {
     return this.localStoreService.updateState((state) => {
       const actorMembership = this.getMembershipOrThrow(state, actorUserId, workspaceId);
       const targetMembership = this.getMembershipOrThrow(state, memberUserId, workspaceId);
+      const workspace = this.getWorkspaceOrThrow(state, workspaceId);
 
       if (memberUserId === actorUserId) {
         if (actorMembership.role === 'OWNER') {
@@ -377,6 +378,15 @@ export class WorkspacesService {
       }
 
       this.removeWorkspaceMemberArtifacts(state, workspaceId, memberUserId);
+      this.reconcileOrganizationMembership(state, workspace.organizationId, memberUserId);
+      this.auditService.append(state, {
+        workspaceId,
+        actorUserId: actorUserId,
+        action: 'MEMBER_REMOVED',
+        entityType: 'WORKSPACE_MEMBER',
+        entityId: `${workspaceId}:${memberUserId}`,
+        targetUserId: memberUserId,
+      });
 
       return {
         success: true,
@@ -387,12 +397,14 @@ export class WorkspacesService {
   async leaveWorkspace(userId: string, workspaceId: string) {
     return this.localStoreService.updateState((state) => {
       const membership = this.getMembershipOrThrow(state, userId, workspaceId);
+      const workspace = this.getWorkspaceOrThrow(state, workspaceId);
 
       if (membership.role === 'OWNER') {
         throw new BadRequestException('Workspace owners cannot leave their own workspace.');
       }
 
       this.removeWorkspaceMemberArtifacts(state, workspaceId, userId);
+      this.reconcileOrganizationMembership(state, workspace.organizationId, userId);
 
       return {
         success: true,
@@ -417,6 +429,28 @@ export class WorkspacesService {
 
     if (!membership) {
       throw new ForbiddenException('Workspace membership is required.');
+    }
+
+    return membership;
+  }
+
+  private getOrganizationOrThrow(state: LocalStoreState, organizationId: string) {
+    const organization = state.organizations.find((candidate) => candidate.id === organizationId);
+
+    if (!organization) {
+      throw new NotFoundException('Organization not found.');
+    }
+
+    return organization;
+  }
+
+  private getOrganizationMembershipOrThrow(state: LocalStoreState, userId: string, organizationId: string) {
+    const membership = state.organizationMemberships.find(
+      (candidate) => candidate.userId === userId && candidate.organizationId === organizationId,
+    );
+
+    if (!membership) {
+      throw new ForbiddenException('Organization membership is required.');
     }
 
     return membership;
@@ -474,6 +508,25 @@ export class WorkspacesService {
     };
   }
 
+  private serializeWorkspaceSummary(
+    state: LocalStoreState,
+    workspace: LocalWorkspaceRecord,
+    role: LocalWorkspaceMembershipRecord['role'],
+  ) {
+    const organization = this.getOrganizationOrThrow(state, workspace.organizationId);
+
+    return {
+      id: workspace.id,
+      organizationId: organization.id,
+      organizationName: organization.name,
+      name: workspace.name,
+      slug: workspace.slug,
+      role,
+      createdAt: workspace.createdAt,
+      updatedAt: workspace.updatedAt,
+    };
+  }
+
   private compareRoles(left: LocalWorkspaceMembershipRecord['role'], right: LocalWorkspaceMembershipRecord['role']) {
     const order = {
       OWNER: 0,
@@ -497,5 +550,156 @@ export class WorkspacesService {
     state.notifications = state.notifications.filter(
       (notification) => !(notification.workspaceId === workspaceId && notification.userId === userId),
     );
+  }
+
+  private createWorkspace(
+    state: LocalStoreState,
+    userId: string,
+    workspaceName: string,
+    organizationId: string | null,
+  ) {
+    const now = new Date().toISOString();
+    const user = state.users.find((candidate) => candidate.id === userId);
+
+    if (!user) {
+      throw new ForbiddenException('Current user does not exist.');
+    }
+
+    const slug = createUniqueSlug(
+      workspaceName,
+      state.workspaces.map((workspace) => workspace.slug),
+    );
+
+    let resolvedOrganizationId = organizationId;
+    let workspaceRole: LocalWorkspaceMembershipRecord['role'] = 'OWNER';
+
+    if (resolvedOrganizationId) {
+      const organizationMembership = this.getOrganizationMembershipOrThrow(state, userId, resolvedOrganizationId);
+
+      if (organizationMembership.role === 'MEMBER') {
+        throw new ForbiddenException('Only organization admins and owners can create workspaces.');
+      }
+
+      this.getOrganizationOrThrow(state, resolvedOrganizationId);
+      workspaceRole = organizationMembership.role === 'OWNER' ? 'OWNER' : 'ADMIN';
+    } else {
+      const organizationSlug = createUniqueSlug(
+        workspaceName,
+        state.organizations.map((organization) => organization.slug),
+      );
+      const organization = {
+        id: randomUUID(),
+        name: workspaceName.trim(),
+        slug: organizationSlug,
+        createdById: userId,
+        createdAt: now,
+        updatedAt: now,
+      };
+
+      state.organizations.push(organization);
+      state.organizationMemberships.push({
+        id: randomUUID(),
+        organizationId: organization.id,
+        userId,
+        role: 'OWNER',
+        joinedAt: now,
+      });
+      resolvedOrganizationId = organization.id;
+    }
+
+    const workspace: LocalWorkspaceRecord = {
+      id: randomUUID(),
+      organizationId: resolvedOrganizationId,
+      name: workspaceName.trim(),
+      slug,
+      createdById: userId,
+      createdAt: now,
+      updatedAt: now,
+    };
+    const membership: LocalWorkspaceMembershipRecord = {
+      id: randomUUID(),
+      workspaceId: workspace.id,
+      userId,
+      role: workspaceRole,
+      joinedAt: now,
+    };
+    const generalChannel: LocalChannelRecord = {
+      id: randomUUID(),
+      workspaceId: workspace.id,
+      name: 'general',
+      description: 'Default team channel',
+      type: 'PUBLIC',
+      createdById: userId,
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    if (state.workspaces.some((candidate) => candidate.slug === workspace.slug)) {
+      throw new ConflictException('A workspace with that slug already exists.');
+    }
+
+    state.workspaces.push(workspace);
+    state.memberships.push(membership);
+    state.channels.push(generalChannel);
+    this.reconcileOrganizationMembership(state, resolvedOrganizationId, userId);
+    this.auditService.append(state, {
+      workspaceId: workspace.id,
+      actorUserId: userId,
+      action: 'WORKSPACE_CREATED',
+      entityType: 'WORKSPACE',
+      entityId: workspace.id,
+      entityLabel: workspace.name,
+      metadata: {
+        slug: workspace.slug,
+        organizationId: resolvedOrganizationId,
+      },
+    });
+
+    return this.serializeWorkspaceSummary(state, workspace, membership.role);
+  }
+
+  private reconcileOrganizationMembership(state: LocalStoreState, organizationId: string, userId: string) {
+    const workspaceIds = new Set(
+      state.workspaces
+        .filter((workspace) => workspace.organizationId === organizationId)
+        .map((workspace) => workspace.id),
+    );
+    const relevantMemberships = state.memberships
+      .filter((membership) => membership.userId === userId && workspaceIds.has(membership.workspaceId))
+      .sort((left, right) => this.compareRoles(left.role, right.role));
+    const existingMembership = state.organizationMemberships.find(
+      (membership) => membership.organizationId === organizationId && membership.userId === userId,
+    );
+
+    if (relevantMemberships.length === 0) {
+      if (existingMembership) {
+        state.organizationMemberships = state.organizationMemberships.filter(
+          (membership) => !(membership.organizationId === organizationId && membership.userId === userId),
+        );
+      }
+
+      return;
+    }
+
+    const nextRole = relevantMemberships[0]?.role ?? 'MEMBER';
+    const joinedAt = relevantMemberships
+      .map((membership) => membership.joinedAt)
+      .sort((left, right) => left.localeCompare(right))[0] ?? new Date().toISOString();
+
+    if (existingMembership) {
+      existingMembership.role = nextRole;
+      existingMembership.joinedAt = existingMembership.joinedAt.localeCompare(joinedAt) <= 0
+        ? existingMembership.joinedAt
+        : joinedAt;
+      return;
+    }
+
+    state.organizationMemberships.push({
+      id: randomUUID(),
+      organizationId,
+      userId,
+      role: nextRole,
+      joinedAt,
+    });
   }
 }

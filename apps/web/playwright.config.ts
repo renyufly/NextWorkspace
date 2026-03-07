@@ -21,7 +21,7 @@ export default defineConfig({
   },
   webServer: [
     {
-      command: `cd ${repoRoot} && rm -rf ${apiTempDir} && mkdir -p ${apiTempDir} && API_PORT=3101 STORAGE_DRIVER=local LOCAL_DATA_FILE=${resolve(apiTempDir, 'state.json')} LOCAL_UPLOAD_DIR=${resolve(apiTempDir, 'uploads')} JWT_ACCESS_SECRET=test-access-secret JWT_REFRESH_SECRET=test-refresh-secret CORS_ORIGIN=http://127.0.0.1:3100 pnpm --filter @worknext/api dev`,
+      command: `cd ${repoRoot} && rm -rf ${apiTempDir} && mkdir -p ${apiTempDir} && pnpm --filter @worknext/api build && API_PORT=3101 STORAGE_DRIVER=local LOCAL_DATA_FILE=${resolve(apiTempDir, 'state.json')} LOCAL_UPLOAD_DIR=${resolve(apiTempDir, 'uploads')} JWT_ACCESS_SECRET=test-access-secret JWT_REFRESH_SECRET=test-refresh-secret CORS_ORIGIN=http://127.0.0.1:3100 pnpm --filter @worknext/api start`,
       url: 'http://127.0.0.1:3101/api/health',
       reuseExistingServer: false,
       timeout: 120_000,

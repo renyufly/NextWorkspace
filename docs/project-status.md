@@ -26,7 +26,7 @@ Delivery principle:
 
 - Prefer completeness and correctness over breadth.
 - Any feature that threatens MVP quality moves to Phase 2.
-- README progress must be updated after each completed feature.
+- `docs/project-status.md` must be updated after each completed feature.
 
 ## 3. Final Tech Decisions
 
@@ -61,7 +61,6 @@ Delivery principle:
 
 ### DevOps
 
-- Local infrastructure: Docker Compose
 - Local fallback runtime: no-Docker WSL2 mode with file-backed persistence
 - Environment management: .env files with schema validation
 - CI baseline: lint, typecheck, test, build
@@ -78,7 +77,7 @@ Delivery principle:
 │   ├── config/
 │   ├── shared/
 │   └── ui/
-├── docker-compose.yml
+├── docs/
 ├── package.json
 ├── pnpm-workspace.yaml
 └── tsconfig.base.json
@@ -92,14 +91,31 @@ Delivery principle:
 - Workspaces: create, rename, invite by email, accept invitation, revoke invitation, leave workspace, and enforce tenant isolation.
 - Memberships and RBAC: owner/admin/member roles, member listing, role updates, and member removal.
 - Channels: public and private channels, rename, delete with general-channel protection, channel membership management, and permission checks.
-- Messaging: send, edit, soft delete, cursor pagination, mark-as-read, unread counts, and attachment linking.
+- Messaging: send, edit, soft delete, cursor pagination, mark-as-read, unread counts, attachment linking, one-level threads, emoji reactions, and derived per-message read receipts.
 - Files: local disk uploads, file validation, attachment metadata persistence, and `/uploads` static serving.
-- Notifications: mention parsing, in-app notification listing, unread count summary, single-item read, and mark-all-read.
-- Realtime: authenticated Socket.IO connection, workspace/channel joins, message create/update/delete broadcasts, typing indicators, and presence heartbeat.
+- Notifications: mention parsing, in-app notification listing, unread count summary, single-item read, mark-all-read, workspace notification preferences, mute controls, digest mode selection, persisted last-digest tracking, manual digest generation, and email plus push delivery baselines with local outboxes and optional external transports.
+- Audit trail: workspace-scoped admin audit history for workspace changes, invitations, role changes, channel administration, and private-channel membership changes.
+- Realtime: authenticated Socket.IO connection, workspace/channel joins, message create/update/delete broadcasts, typing indicators, presence heartbeat, reconnect-driven room rejoin, and client-triggered state sync.
 - Engineering baseline: Swagger, Pino logging, ValidationPipe, centralized exception filter, Helmet, throttling, and health reporting.
-- Frontend shell: register/login, workspace and channel navigation, chat timeline, composer, notifications, theme toggle, responsive layout work, and workspace settings drawer.
+- Operations baseline: liveness and readiness probes, dependency-aware health status, and a repository-backed operations runbook for monitoring, backup, restore, and incident response.
+- Operations documentation baseline: the repo now also includes an operations validation checklist covering alert routing, backup drills, restore drills, and Redis multi-instance verification steps.
+- Frontend shell: register/login, workspace and channel navigation, chat timeline, composer, thread panel, reactions, workspace search, notifications, theme toggle, responsive layout work, workspace settings drawer, admin analytics snapshot cards, and organization admin overview with cross-workspace creation.
+- Search: workspace-scoped ranked search across accessible channels, messages, files, and members with scope filters, channel filters, previews, and frontend highlighting.
+- Automated verification: API Jest E2E coverage for auth, organizations, workspaces, invitations, private channels, uploads, messaging, threads, reactions, read receipts, search, notifications, digest generation, email and push outbox delivery, and workspace analytics; Playwright browser coverage for workspace creation, organization workspace creation, switching, thread replies, reactions, search, invitation acceptance, and notification preference interactions including manual digest runs, email and push toggles, and analytics visibility.
+- Frontend responsiveness: optimistic updates with rollback for core collaboration flows including workspaces, channels, invitations, memberships, notifications, and message mutations.
 
-### 5.2 Current TODO Board
+### 5.2 Phase 2 Infrastructure Sync
+
+This section reflects the latest completed Phase 2 platform work and should be updated after every implementation pass.
+
+- Redis realtime scaling baseline: optional Redis service wiring and Socket.IO Redis adapter integration are implemented behind env flags so single-instance Phase 1 runtime still works without Redis.
+- Redis adapter validation baseline: a local two-instance Redis-backed fan-out validation has now been completed against real `redis-server`, and the namespace-vs-root-server adapter wiring bug discovered during validation was fixed.
+- Delivery reconciliation baseline: persisted presence records, per-user realtime rooms, reconnect invalidation, `state:sync` plus `state:reconciled` flow, and online user reconciliation are implemented for client recovery after reconnect.
+- BullMQ job baseline: mention-notification dispatch can now run through BullMQ with retry/backoff when Redis and `ENABLE_BULLMQ=true` are enabled, while preserving inline fallback when queues are disabled.
+- Production hardening baseline: health checks now report storage, database, Redis, queues, and realtime adapter status; feature flags expose whether Redis adapter and BullMQ are active; dedicated liveness and readiness probes plus an operations runbook are now in place.
+- Runtime safety: API start and dev entrypoints were corrected to follow the real monorepo build output path, so local dev and Playwright boot flows use a stable backend startup path.
+
+### 5.3 Current TODO Board
 
 Current planning rule for the active MVP:
 
@@ -107,20 +123,20 @@ Current planning rule for the active MVP:
 - Do not spend time on S3-compatible storage for now.
 - Continue using WSL2 local services plus PostgreSQL and local disk uploads.
 
-| Priority | Area | Remaining work | Current gap | Suggested done criteria |
-| --- | --- | --- | --- | --- |
-| P0 | Testing | Add real API E2E coverage for auth, workspace, channel, message, invitation, upload, and notification flows. | API only has a placeholder E2E baseline. | Critical business flows run in automated CI-friendly tests against the active PostgreSQL runtime. |
-| P0 | Testing | Add frontend Playwright coverage for login, workspace switching, messaging, invitation acceptance, and notification interactions. | Playwright is installed but no real test suites are authored. | Web critical path can be smoke-tested automatically before release. |
-| P0 | Frontend UX | Finish end-to-end optimistic updates and failure rollback for message send/edit/delete, channel operations, invitations, and membership changes. | Current UI works but still falls back to refetch-driven updates in several flows. | Main collaboration actions feel immediate and recover cleanly from API errors. |
-| P1 | Realtime scaling | Add Redis-backed Socket.IO adapter for horizontal scaling. | Realtime currently works only as a single-instance deployment path. | Multiple API instances can fan out events consistently through Redis. |
-| P1 | Realtime reliability | Add multi-instance delivery acknowledgement, reconnect reconciliation, and stronger realtime consistency rules. | Socket events exist, but cross-instance durability and reconciliation are not implemented. | Clients can recover state cleanly after reconnects or instance changes without silent message divergence. |
-| P1 | Background jobs | Introduce BullMQ for async notification fan-out, cleanup jobs, and retryable background work. | All current flows execute inline in the request path. | Long-running or retryable work is moved out of synchronous API requests. |
-| P1 | Ops hardening | Complete production-oriented PostgreSQL plus Redis operational hardening. | Local runtime is usable, but production deployment, observability, and failure-handling are still thin. | Runtime has a documented production checklist covering backups, env handling, health, and scaling assumptions. |
-| P2 | Backend modules | Wire real SearchModule and AuditModule implementations into active code paths. | These modules are reserved in the architecture only. | Search and audit move from design placeholders to callable backend features. |
-| P2 | Product features | Implement deferred collaboration features such as threads, reactions, read receipts, and richer notification preferences. | MVP currently stops at core chat, files, mentions, and inbox notifications. | Collaboration surface goes beyond baseline chat and workspace management. |
-| P2 | Auth and platform | Add OAuth, organization administration, analytics, AI workflows, and later decomposition work only after MVP is stable. | These remain roadmap items, not active MVP scope. | Roadmap items are evaluated after core stability, testing, and scaling work are complete. |
+| Priority | Area | Status | Remaining work | Current gap | Suggested done criteria |
+| --- | --- | --- | --- | --- | --- |
+| P0 | Testing | Done | API E2E coverage for auth, workspace, channel, message, invitation, upload, and notification flows. | Closed. Jest E2E now covers the critical API path. | Keep the suite green as new features land. |
+| P0 | Testing | Done | Frontend Playwright coverage for login, workspace switching, messaging, invitation acceptance, and notification interactions. | Closed. Browser smoke coverage now exercises the main collaboration loop. | Extend only when new user-facing flows are added. |
+| P0 | Frontend UX | Done | End-to-end optimistic updates and failure rollback for message send/edit/delete, channel operations, invitations, and membership changes. | Closed for the current MVP surface. | Preserve rollback correctness as new mutations are added. |
+| P1 | Realtime scaling | In Progress | Extend Redis-backed Socket.IO validation beyond the completed local two-instance proof into repeatable rollout notes and broader environment coverage. | Two API instances have now been validated locally against real Redis with successful cross-instance message fan-out and surviving-instance `state:sync` recovery, but broader deployment notes and additional failure-mode coverage are still pending. | Multiple API instances can fan out events consistently through Redis in a verified runbook-backed setup with repeatable rollout guidance. |
+| P1 | Realtime reliability | In Progress | Strengthen delivery acknowledgement rules, reconnect reconciliation, and multi-instance consistency guarantees. | Baseline reconciliation is implemented, but delivery durability, missed-event replay, and cross-instance edge cases are not fully covered yet. | Clients recover state cleanly after reconnects or instance changes without silent divergence under verified multi-instance tests. |
+| P1 | Background jobs | In Progress | Broaden BullMQ beyond mention notifications to cleanup and other retryable work, then validate against live Redis. | Queue wiring exists with retry/backoff and fallback, but only mention notification fan-out is using it today. | Long-running or retryable work is consistently moved out of synchronous request paths and verified under queue runtime. |
+| P1 | Ops hardening | In Progress | Finish production checklist, monitoring, alerting, backup, restore, and failure playbooks for PostgreSQL plus Redis. | Health surface now includes liveness and readiness probes, the repo has an operations runbook, and there is now a validation checklist for alert routing and drills, but live backup drills, restore evidence, and multi-instance recovery validation are still pending. | Runtime has documented production assumptions, recovery procedures, observability requirements, and a tested restore path. |
+| P2 | Backend modules | In Progress | Keep SearchModule and AuditModule integrated, then extend audit coverage and search depth. | AuditModule and ranked filtered search are now active, but moderation-related audit trails, auth/session audit events, and deeper relevance tuning are still limited. | Search and audit are production-ready for core admin and collaboration use cases with clear expansion paths. |
+| P2 | Product features | In Progress | Deliver deeper analytics and organization-level administration on top of the current collaboration baseline. | Initial admin analytics, email delivery, push delivery, and organization overview baselines are now available, but deeper dashboard drill-downs, scheduled digest automation, richer push integrations, and fuller org-level lifecycle controls are still missing. | Product scope grows into team operations and administration without regressing the collaboration surface. |
+| P2 | Auth and platform | Planned | Add OAuth, enterprise auth extensions, and supporting platform controls after reliability and operations are in better shape. | Authentication is still email/password only, and platform-level administration remains workspace-scoped. | Platform scope expands after reliability and operational readiness are stable. |
 
-### 5.3 Deferred For Now
+### 5.4 Deferred For Now
 
 - Docker-based local workflow is intentionally out of scope for the current WSL2-first setup.
 - S3-compatible storage abstraction is intentionally deferred; local disk uploads remain the active file path.
@@ -131,18 +147,39 @@ Current planning rule for the active MVP:
 The following features stay deferred until the MVP todo board above is substantially complete:
 
 - OAuth login providers
-- Threads
-- Emoji reactions
-- Read receipts
-- Full-text search
-- Email notifications
-- Push notifications
-- Advanced notification preferences
-- Audit logs
-- Admin analytics dashboards
+- Admin analytics dashboards with deeper drill-down and trend views
 - AI assistant and summarization workflows
 - Organization-level administration
+
+### 6.1 Highest-Priority Business Features Still Not Implemented
+
+The main remaining Phase 2 gaps are now more product-facing than infrastructure-facing:
+
+- Audit coverage depth: admin-sensitive workspace and channel actions are now logged, but message moderation, auth/session events, and richer operator workflows are still not covered.
+- Search quality ceiling: ranked filtered search with previews and highlighting is implemented, but advanced relevance tuning, saved searches, and deeper full-text behavior are still missing.
+- External delivery channels: email and push delivery now both have baselines with per-workspace preferences, local outbox delivery, and optional external transports, but richer device-level push integration is not implemented.
+- Notification delivery maturity: digest mode, mute preferences, last-digest tracking, manual in-app digest generation, and optional email plus push delivery are implemented, but there is not yet a real scheduled digest delivery pipeline.
+- Organization and admin layer: an organization baseline now groups workspaces, surfaces org membership and workspace visibility to admins, and allows adding workspaces under an existing org, but org-level invitations, role editing, and centralized policy controls are still missing.
+- Analytics depth: a baseline admin dashboard now shows active members, message volume, engaged-member retention proxy, top channels, and audit activity, but deeper drill-downs, cohort reporting, and moderation analytics are still missing.
+- OAuth and enterprise auth: authentication is still email/password only.
+
+### 6.2 Active Expansion Scope
+
+The next product expansion is intentionally limited to the following four tracks:
+
+- Analytics dashboard: add admin-facing views for active users, message volume, workspace retention, and moderation or audit activity.
+- External notifications: add email delivery first, then push delivery, while preserving the current in-app notification and digest path as fallback.
+- Organization administration: add organization entities, cross-workspace membership oversight, org-level roles, and admin visibility across workspaces.
+- Operations readiness: add monitoring, alerting thresholds, backup and restore procedures, and incident runbooks that match the current monolith deployment model.
+
+Explicitly out of scope for the current planning window:
+
 - Microservice decomposition
+
+### 6.3 Operational References
+
+- Operations runbook: `docs/operations-runbook.md`
+- Operations validation checklist: `docs/operations-validation-checklist.md`
 
 ## 7. Architecture Principles
 
@@ -181,7 +218,7 @@ The following features stay deferred until the MVP todo board above is substanti
 - LoggingModule
 - SecurityModule
 
-### Reserved Phase 2 Modules
+### Active Or Reserved Phase 2 Modules
 
 - SearchModule
 - AuditModule
@@ -252,7 +289,7 @@ Phase 1 realtime model:
 - Unit tests for domain services and guards
 - Integration tests for controllers and repositories
 - E2E tests for auth and critical messaging flows
-- Frontend end-to-end tests with Playwright after core flows stabilize
+- Frontend end-to-end tests with Playwright for workspace creation, switching, invitation acceptance, messaging, and notification interactions
 
 ## 15. Implementation Phases
 
@@ -290,6 +327,7 @@ Phase 1 realtime model:
 - Presence heartbeat
 - Redis adapter
 - Reconnect handling
+- State reconciliation baseline
 
 ### Phase 1D: Files and Notifications
 
@@ -315,10 +353,11 @@ Phase 1 realtime model:
 - Playwright coverage
 - Deployment notes
 - Interview-ready design summary
+- API E2E coverage
 
 ## 16. Progress Tracking Rule
 
-After each completed feature, update this README with:
+After each completed feature, update `docs/project-status.md` with:
 
 - Status: Planned, In Progress, Done, or Blocked
 - Implementation summary
@@ -347,6 +386,12 @@ After each completed feature, update this README with:
 | UI polish and refinements | Done | Refined CSS with hover-reveal message toolbars, brightness hover micro-animations, pulsing typing indicator dot animation, grayscale styling for deleted messages, and smoother theme transition timing. | Visual review in browser, `pnpm --filter @worknext/web build` | Continue iterating on responsive mobile view and optimistic update animations. |
 | Runtime status rewrite | Done | Reclassified the README into implemented, not implemented, and planned-but-not-wired sections so current project state is explicit instead of implied by the target architecture. | Manual review | Keep the status section synchronized with the active runtime instead of the aspirational architecture. |
 | PostgreSQL persistence adapter | Done | Extended the Prisma schema and LocalStoreService so the existing business services persist through PostgreSQL, then switched the active local runtime to `STORAGE_DRIVER=database`. The API now boots in database mode and reports PostgreSQL storage in health checks. | `pnpm --filter @worknext/api db:push`, `pnpm --filter @worknext/api db:generate`, `pnpm --filter @worknext/api typecheck`, `pnpm --filter @worknext/api build`, HTTP check on `/api/health`, SQL row-count verification in PostgreSQL | Add a dedicated one-shot migration command for JSON-to-PostgreSQL import instead of relying on first-boot bootstrap behavior. |
+| API E2E coverage | Done | Added Jest E2E coverage for register, refresh, profile, workspace creation, invitation acceptance, private channels, file uploads, message lifecycle, read markers, and mention notifications. | `pnpm --filter @worknext/api test` | Expand the suite when new backend capabilities are added; add Redis-backed scenarios later. |
+| Web Playwright coverage | Done | Added browser E2E coverage for registration, workspace switching, channel creation, message send, invitation acceptance, and mention notification reading. Stabilized the suite around optimistic invitation tokens and a reproducible API startup path. | `pnpm --filter @worknext/web test` | Add more browser coverage only as new UX flows become user-critical. |
+| Optimistic UI pass | Done | Implemented optimistic cache updates plus rollback for main collaboration mutations across workspaces, channels, invitations, memberships, notifications, and message actions. | `pnpm --filter @worknext/web typecheck`, `pnpm --filter @worknext/web test` | Add optimistic treatment for any future mutations introduced in Phase 2. |
+| Phase 2 infrastructure baseline | In Progress | Added optional Redis adapter wiring, persisted presence reconciliation, per-user realtime rooms, BullMQ-backed mention notification dispatch with fallback, expanded health reporting, and fixed API dev/start scripts to match real build output. | `pnpm --filter @worknext/api typecheck`, `pnpm --filter @worknext/api test`, `pnpm --filter @worknext/web typecheck`, `pnpm --filter @worknext/web test`, API health checks via `curl` | Validate true multi-instance Redis deployment, broaden queue usage beyond mention notifications, and document production operations. |
+| Phase 2 collaboration features | Done | Implemented one-level message threads, emoji reactions, derived per-message read receipts, workspace notification preferences with mute and digest settings, and unified workspace search across channels, messages, files, and members. Wired the new backend APIs into the web shell with thread reply UI, reaction controls, search panel, read-receipt summaries, and notification preference controls. | `pnpm --filter @worknext/api typecheck`, `pnpm --filter @worknext/web typecheck`, `pnpm --filter @worknext/api test`, `pnpm --filter @worknext/web test` | Improve search ranking and filtering, add scheduled digest delivery, and extend audit/admin capabilities without regressing the shipped collaboration surface. |
+| Audit trail and search quality pass | Done | Added AuditModule with workspace-scoped admin audit history plus a settings-drawer audit UI, and upgraded search with scope filters, channel filters, ranking, previews, and frontend highlighting. Audit coverage now includes workspace changes, invitations, role changes, channel lifecycle, and private channel membership operations. | `pnpm --filter @worknext/api db:generate`, `pnpm --filter @worknext/api typecheck`, `pnpm --filter @worknext/web typecheck`, `pnpm --filter @worknext/api test`, `pnpm --filter @worknext/web test` | Add scheduled digest delivery, external notification channels, richer audit coverage, organization admin, and analytics. |
 
 ## 18. Local Environment Setup
 

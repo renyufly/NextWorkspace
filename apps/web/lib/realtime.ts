@@ -14,6 +14,10 @@ export function createRealtimeSocket(accessToken: string) {
       token: accessToken,
     },
     reconnection: true,
+    reconnectionAttempts: Infinity,
+    reconnectionDelay: 750,
+    reconnectionDelayMax: 5000,
+    timeout: 8000,
     autoConnect: true,
   });
 }

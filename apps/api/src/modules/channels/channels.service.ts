@@ -2,6 +2,7 @@ import { ConflictException, ForbiddenException, Injectable, NotFoundException } 
 import { randomUUID } from 'node:crypto';
 
 import { slugify } from '../../common/slugify.js';
+import { AuditService } from '../audit/audit.service.js';
 import type {
   LocalChannelMembershipRecord,
   LocalChannelRecord,
@@ -18,6 +19,7 @@ export class ChannelsService {
   constructor(
     private readonly localStoreService: LocalStoreService,
     private readonly workspacesService: WorkspacesService,
+    private readonly auditService: AuditService,
   ) {}
 
   async list(userId: string, workspaceId: string) {
@@ -73,6 +75,17 @@ export class ChannelsService {
       };
 
       state.channels.push(channel);
+      this.auditService.append(state, {
+        workspaceId,
+        actorUserId: userId,
+        action: 'CHANNEL_CREATED',
+        entityType: 'CHANNEL',
+        entityId: channel.id,
+        entityLabel: channel.name,
+        metadata: {
+          type: channel.type,
+        },
+      });
 
       if (channel.type === 'PRIVATE') {
         if (membership.role === 'MEMBER') {
@@ -174,6 +187,15 @@ export class ChannelsService {
         addedById: actorUserId,
         joinedAt: now,
       });
+      this.auditService.append(state, {
+        workspaceId,
+        actorUserId: actorUserId,
+        action: 'CHANNEL_MEMBER_ADDED',
+        entityType: 'CHANNEL_MEMBER',
+        entityId: `${channelId}:${memberUserId}`,
+        entityLabel: channel.name,
+        targetUserId: memberUserId,
+      });
 
       return {
         userId: user.id,
@@ -221,6 +243,15 @@ export class ChannelsService {
             readState.userId === memberUserId
           ),
       );
+      this.auditService.append(state, {
+        workspaceId,
+        actorUserId: actorUserId,
+        action: 'CHANNEL_MEMBER_REMOVED',
+        entityType: 'CHANNEL_MEMBER',
+        entityId: `${channelId}:${memberUserId}`,
+        entityLabel: channel.name,
+        targetUserId: memberUserId,
+      });
 
       return { success: true };
     });
@@ -263,6 +294,17 @@ export class ChannelsService {
       }
 
       channel.updatedAt = new Date().toISOString();
+      this.auditService.append(state, {
+        workspaceId,
+        actorUserId: userId,
+        action: 'CHANNEL_UPDATED',
+        entityType: 'CHANNEL',
+        entityId: channel.id,
+        entityLabel: channel.name,
+        metadata: {
+          type: channel.type,
+        },
+      });
 
       return this.serializeChannel(state, channel, userId);
     });
@@ -293,6 +335,17 @@ export class ChannelsService {
       state.messages = state.messages.filter(
         (message) => message.channelId !== channelId,
       );
+      this.auditService.append(state, {
+        workspaceId,
+        actorUserId: userId,
+        action: 'CHANNEL_DELETED',
+        entityType: 'CHANNEL',
+        entityId: channel.id,
+        entityLabel: channel.name,
+        metadata: {
+          type: channel.type,
+        },
+      });
 
       return { success: true };
     });

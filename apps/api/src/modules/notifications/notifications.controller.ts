@@ -1,8 +1,10 @@
-import { Controller, Get, Param, Patch, Post, Query, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Param, Patch, Post, Query, UseGuards } from '@nestjs/common';
 
 import { AccessTokenGuard } from '../auth/access-token.guard.js';
 import type { AuthenticatedUser } from '../auth/auth.types.js';
 import { CurrentUser } from '../auth/current-user.decorator.js';
+import { RunDigestDto } from './dto/run-digest.dto.js';
+import { UpdateNotificationPreferencesDto } from './dto/update-notification-preferences.dto.js';
 import { NotificationsService } from './notifications.service.js';
 
 @UseGuards(AccessTokenGuard)
@@ -28,5 +30,23 @@ export class NotificationsController {
   @Post('read-all')
   async markAllRead(@CurrentUser() user: AuthenticatedUser, @Query('workspaceId') workspaceId?: string) {
     return this.notificationsService.markAllRead(user.userId, workspaceId);
+  }
+
+  @Get('preferences')
+  async getPreferences(@CurrentUser() user: AuthenticatedUser, @Query('workspaceId') workspaceId: string) {
+    return this.notificationsService.getPreferences(user.userId, workspaceId);
+  }
+
+  @Patch('preferences')
+  async updatePreferences(
+    @CurrentUser() user: AuthenticatedUser,
+    @Body() dto: UpdateNotificationPreferencesDto,
+  ) {
+    return this.notificationsService.updatePreferences(user.userId, dto);
+  }
+
+  @Post('digest/run')
+  async runDigest(@CurrentUser() user: AuthenticatedUser, @Body() dto: RunDigestDto) {
+    return this.notificationsService.runDigest(user.userId, dto.workspaceId);
   }
 }

@@ -17,6 +17,7 @@ import { ListMessagesQueryDto } from './dto/list-messages-query.dto.js';
 import { SendMessageDto } from './dto/send-message.dto.js';
 import { MessagesService } from './messages.service.js';
 import { UpdateMessageDto } from './dto/update-message.dto.js';
+import { ToggleReactionDto } from './dto/toggle-reaction.dto.js';
 
 @UseGuards(AccessTokenGuard)
 @Controller('workspaces/:workspaceId/channels/:channelId/messages')
@@ -71,5 +72,37 @@ export class MessagesController {
     @Param('channelId') channelId: string,
   ) {
     return this.messagesService.markRead(user.userId, workspaceId, channelId);
+  }
+
+  @Get(':messageId/thread')
+  async listThread(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('workspaceId') workspaceId: string,
+    @Param('channelId') channelId: string,
+    @Param('messageId') messageId: string,
+  ) {
+    return this.messagesService.listThread(user.userId, workspaceId, channelId, messageId);
+  }
+
+  @Post(':messageId/reactions')
+  async addReaction(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('workspaceId') workspaceId: string,
+    @Param('channelId') channelId: string,
+    @Param('messageId') messageId: string,
+    @Body() dto: ToggleReactionDto,
+  ) {
+    return this.messagesService.addReaction(user.userId, workspaceId, channelId, messageId, dto.emoji);
+  }
+
+  @Delete(':messageId/reactions')
+  async removeReaction(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('workspaceId') workspaceId: string,
+    @Param('channelId') channelId: string,
+    @Param('messageId') messageId: string,
+    @Body() dto: ToggleReactionDto,
+  ) {
+    return this.messagesService.removeReaction(user.userId, workspaceId, channelId, messageId, dto.emoji);
   }
 }

@@ -1,5 +1,20 @@
 export type WorkspaceRole = 'OWNER' | 'ADMIN' | 'MEMBER';
+export type OrganizationRole = 'OWNER' | 'ADMIN' | 'MEMBER';
 export type ChannelType = 'PUBLIC' | 'PRIVATE';
+export type AuditEntityType = 'WORKSPACE' | 'INVITATION' | 'WORKSPACE_MEMBER' | 'CHANNEL' | 'CHANNEL_MEMBER';
+export type AuditAction =
+  | 'WORKSPACE_CREATED'
+  | 'WORKSPACE_UPDATED'
+  | 'INVITATION_CREATED'
+  | 'INVITATION_REVOKED'
+  | 'INVITATION_ACCEPTED'
+  | 'MEMBER_ROLE_UPDATED'
+  | 'MEMBER_REMOVED'
+  | 'CHANNEL_CREATED'
+  | 'CHANNEL_UPDATED'
+  | 'CHANNEL_DELETED'
+  | 'CHANNEL_MEMBER_ADDED'
+  | 'CHANNEL_MEMBER_REMOVED';
 
 export interface LocalUserRecord {
   id: string;
@@ -22,8 +37,26 @@ export interface LocalSessionRecord {
   updatedAt: string;
 }
 
+export interface LocalOrganizationRecord {
+  id: string;
+  name: string;
+  slug: string;
+  createdById: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface LocalOrganizationMembershipRecord {
+  id: string;
+  organizationId: string;
+  userId: string;
+  role: OrganizationRole;
+  joinedAt: string;
+}
+
 export interface LocalWorkspaceRecord {
   id: string;
+  organizationId: string;
   name: string;
   slug: string;
   createdById: string;
@@ -98,7 +131,7 @@ export interface LocalNotificationRecord {
   id: string;
   workspaceId: string;
   userId: string;
-  type: 'MENTION';
+  type: 'MENTION' | 'DIGEST';
   title: string;
   body: string;
   channelId: string;
@@ -107,15 +140,65 @@ export interface LocalNotificationRecord {
   createdAt: string;
 }
 
+export interface LocalNotificationPreferenceRecord {
+  id: string;
+  workspaceId: string;
+  userId: string;
+  muteAll: boolean;
+  allowMentions: boolean;
+  emailMentions: boolean;
+  emailDigest: boolean;
+  pushMentions: boolean;
+  pushDigest: boolean;
+  mutedChannelIds: string[];
+  digestMode: 'OFF' | 'DAILY';
+  lastDigestAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface LocalAuditLogRecord {
+  id: string;
+  workspaceId: string;
+  actorUserId: string;
+  actorDisplayName: string;
+  action: AuditAction;
+  entityType: AuditEntityType;
+  entityId: string;
+  entityLabel: string | null;
+  targetUserId: string | null;
+  targetDisplayName: string | null;
+  metadata: Record<string, string | number | boolean | null>;
+  createdAt: string;
+}
+
+export interface LocalPresenceRecord {
+  userId: string;
+  status: 'online' | 'offline';
+  lastSeenAt: string;
+  updatedAt: string;
+}
+
 export interface LocalMessageRecord {
   id: string;
   workspaceId: string;
   channelId: string;
   senderId: string;
+  parentMessageId: string | null;
   content: string;
   createdAt: string;
   updatedAt: string;
   deletedAt: string | null;
+}
+
+export interface LocalMessageReactionRecord {
+  id: string;
+  workspaceId: string;
+  channelId: string;
+  messageId: string;
+  userId: string;
+  emoji: string;
+  createdAt: string;
 }
 
 export interface LocalStoreState {
@@ -126,6 +209,8 @@ export interface LocalStoreState {
   };
   users: LocalUserRecord[];
   sessions: LocalSessionRecord[];
+  organizations: LocalOrganizationRecord[];
+  organizationMemberships: LocalOrganizationMembershipRecord[];
   workspaces: LocalWorkspaceRecord[];
   memberships: LocalWorkspaceMembershipRecord[];
   invitations: LocalInvitationRecord[];
@@ -134,7 +219,11 @@ export interface LocalStoreState {
   channelReadStates: LocalChannelReadStateRecord[];
   attachments: LocalFileAttachmentRecord[];
   notifications: LocalNotificationRecord[];
+  notificationPreferences: LocalNotificationPreferenceRecord[];
+  auditLogs: LocalAuditLogRecord[];
+  presences: LocalPresenceRecord[];
   messages: LocalMessageRecord[];
+  messageReactions: LocalMessageReactionRecord[];
 }
 
 export function createEmptyState(): LocalStoreState {
@@ -148,6 +237,8 @@ export function createEmptyState(): LocalStoreState {
     },
     users: [],
     sessions: [],
+    organizations: [],
+    organizationMemberships: [],
     workspaces: [],
     memberships: [],
     invitations: [],
@@ -156,6 +247,10 @@ export function createEmptyState(): LocalStoreState {
     channelReadStates: [],
     attachments: [],
     notifications: [],
+    notificationPreferences: [],
+    auditLogs: [],
+    presences: [],
     messages: [],
+    messageReactions: [],
   };
 }

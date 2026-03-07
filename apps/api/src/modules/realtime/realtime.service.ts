@@ -1,6 +1,8 @@
 import { Injectable } from '@nestjs/common';
 import type { Server } from 'socket.io';
 
+import type { RealtimeSyncSummary } from '@worknext/shared';
+
 @Injectable()
 export class RealtimeService {
   private server: Server | null = null;
@@ -34,11 +36,19 @@ export class RealtimeService {
     this.server?.to(this.workspaceRoom(workspaceId)).emit('notification:new', { ...payload as object, userId });
   }
 
+  emitStateReconciled(userId: string, payload: RealtimeSyncSummary) {
+    this.server?.to(this.userRoom(userId)).emit('state:reconciled', payload);
+  }
+
   workspaceRoom(workspaceId: string) {
     return `workspace:${workspaceId}`;
   }
 
   channelRoom(channelId: string) {
     return `channel:${channelId}`;
+  }
+
+  userRoom(userId: string) {
+    return `user:${userId}`;
   }
 }

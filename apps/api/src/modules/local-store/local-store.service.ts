@@ -10,6 +10,75 @@ import { createEmptyState, type LocalStoreState } from './local-store.types.js';
 type DatabaseClient = PrismaService | Prisma.TransactionClient;
 const APP_STATE_META_ID = 'worknext-state';
 
+const roleOrder = {
+  OWNER: 0,
+  ADMIN: 1,
+  MEMBER: 2,
+} as const;
+
+function compareRoles(left: keyof typeof roleOrder, right: keyof typeof roleOrder) {
+  return roleOrder[left] - roleOrder[right];
+}
+
+function backfillOrganizations(rawState: Partial<LocalStoreState>, emptyState: LocalStoreState) {
+  const existingOrganizations = rawState.organizations ?? emptyState.organizations;
+  const existingOrganizationMemberships = rawState.organizationMemberships ?? emptyState.organizationMemberships;
+  const existingWorkspaces = rawState.workspaces ?? emptyState.workspaces;
+
+  if (existingOrganizations.length > 0 && existingOrganizationMemberships.length > 0) {
+    return {
+      organizations: existingOrganizations,
+      organizationMemberships: existingOrganizationMemberships,
+      workspaces: existingWorkspaces.map((workspace) => ({
+        ...workspace,
+        organizationId: workspace.organizationId ?? workspace.id,
+      })),
+    };
+  }
+
+  const organizations = existingWorkspaces.map((workspace) => ({
+    id: workspace.organizationId ?? workspace.id,
+    name: workspace.name,
+    slug: workspace.slug,
+    createdById: workspace.createdById,
+    createdAt: workspace.createdAt,
+    updatedAt: workspace.updatedAt,
+  }));
+
+  const workspaceToOrganization = new Map(existingWorkspaces.map((workspace) => [workspace.id, workspace.organizationId ?? workspace.id]));
+  const membershipByOrganizationUser = new Map<string, LocalStoreState['organizationMemberships'][number]>();
+
+  for (const membership of rawState.memberships ?? emptyState.memberships) {
+    const organizationId = workspaceToOrganization.get(membership.workspaceId);
+
+    if (!organizationId) {
+      continue;
+    }
+
+    const key = `${organizationId}:${membership.userId}`;
+    const current = membershipByOrganizationUser.get(key);
+
+    if (!current || compareRoles(membership.role, current.role) < 0) {
+      membershipByOrganizationUser.set(key, {
+        id: current?.id ?? `${organizationId}:${membership.userId}`,
+        organizationId,
+        userId: membership.userId,
+        role: membership.role,
+        joinedAt: current?.joinedAt ?? membership.joinedAt,
+      });
+    }
+  }
+
+  return {
+    organizations,
+    organizationMemberships: Array.from(membershipByOrganizationUser.values()),
+    workspaces: existingWorkspaces.map((workspace) => ({
+      ...workspace,
+      organizationId: workspace.organizationId ?? workspace.id,
+    })),
+  };
+}
+
 @Injectable()
 export class LocalStoreService {
   private readonly stateFilePath: string;
@@ -105,6 +174,7 @@ export class LocalStoreService {
 
   private normalizeState(rawState: Partial<LocalStoreState>): LocalStoreState {
     const emptyState = createEmptyState();
+    const organizationState = backfillOrganizations(rawState, emptyState);
 
     return {
       meta: {
@@ -114,7 +184,9 @@ export class LocalStoreService {
       },
       users: rawState.users ?? emptyState.users,
       sessions: rawState.sessions ?? emptyState.sessions,
-      workspaces: rawState.workspaces ?? emptyState.workspaces,
+      organizations: organizationState.organizations,
+      organizationMemberships: organizationState.organizationMemberships,
+      workspaces: organizationState.workspaces,
       memberships: rawState.memberships ?? emptyState.memberships,
       invitations: rawState.invitations ?? emptyState.invitations,
       channels: rawState.channels ?? emptyState.channels,
@@ -122,7 +194,17 @@ export class LocalStoreService {
       channelReadStates: rawState.channelReadStates ?? emptyState.channelReadStates,
       attachments: rawState.attachments ?? emptyState.attachments,
       notifications: rawState.notifications ?? emptyState.notifications,
+      notificationPreferences: (rawState.notificationPreferences ?? emptyState.notificationPreferences).map((preference) => ({
+        ...preference,
+        emailMentions: preference.emailMentions ?? false,
+        emailDigest: preference.emailDigest ?? false,
+        pushMentions: preference.pushMentions ?? false,
+        pushDigest: preference.pushDigest ?? false,
+      })),
+      auditLogs: rawState.auditLogs ?? emptyState.auditLogs,
+      presences: rawState.presences ?? emptyState.presences,
       messages: rawState.messages ?? emptyState.messages,
+      messageReactions: rawState.messageReactions ?? emptyState.messageReactions,
     };
   }
 
@@ -138,6 +220,8 @@ export class LocalStoreService {
       meta,
       users,
       sessions,
+      organizations,
+      organizationMemberships,
       workspaces,
       memberships,
       invitations,
@@ -146,11 +230,17 @@ export class LocalStoreService {
       channelReadStates,
       attachments,
       notifications,
+      notificationPreferences,
+      auditLogs,
+      presences,
       messages,
+      messageReactions,
     ] = await Promise.all([
       client.appStateMeta.findUnique({ where: { id: APP_STATE_META_ID } }),
       client.user.findMany(),
       client.session.findMany(),
+      client.organization.findMany(),
+      client.organizationMembership.findMany(),
       client.workspace.findMany(),
       client.workspaceMembership.findMany(),
       client.invitation.findMany(),
@@ -159,7 +249,11 @@ export class LocalStoreService {
       client.channelReadState.findMany(),
       client.fileAttachment.findMany(),
       client.notification.findMany(),
+      client.notificationPreference.findMany(),
+      client.auditLog.findMany(),
+      client.presence.findMany(),
       client.message.findMany(),
+      client.messageReaction.findMany(),
     ]);
 
     const emptyState = createEmptyState();
@@ -191,8 +285,24 @@ export class LocalStoreService {
         createdAt: session.createdAt.toISOString(),
         updatedAt: session.updatedAt.toISOString(),
       })),
+      organizations: organizations.map((organization) => ({
+        id: organization.id,
+        name: organization.name,
+        slug: organization.slug,
+        createdById: organization.createdById,
+        createdAt: organization.createdAt.toISOString(),
+        updatedAt: organization.updatedAt.toISOString(),
+      })),
+      organizationMemberships: organizationMemberships.map((membership) => ({
+        id: membership.id,
+        organizationId: membership.organizationId,
+        userId: membership.userId,
+        role: membership.role,
+        joinedAt: membership.joinedAt.toISOString(),
+      })),
       workspaces: workspaces.map((workspace) => ({
         id: workspace.id,
+        organizationId: workspace.organizationId,
         name: workspace.name,
         slug: workspace.slug,
         createdById: workspace.createdById,
@@ -268,15 +378,61 @@ export class LocalStoreService {
         readAt: notification.readAt?.toISOString() ?? null,
         createdAt: notification.createdAt.toISOString(),
       })),
+      notificationPreferences: notificationPreferences.map((preference) => ({
+        id: preference.id,
+        workspaceId: preference.workspaceId,
+        userId: preference.userId,
+        muteAll: preference.muteAll,
+        allowMentions: preference.allowMentions,
+        emailMentions: preference.emailMentions,
+        emailDigest: preference.emailDigest,
+        pushMentions: preference.pushMentions,
+        pushDigest: preference.pushDigest,
+        mutedChannelIds: preference.mutedChannelIds,
+        digestMode: preference.digestMode,
+        lastDigestAt: preference.lastDigestAt?.toISOString() ?? null,
+        createdAt: preference.createdAt.toISOString(),
+        updatedAt: preference.updatedAt.toISOString(),
+      })),
+      auditLogs: auditLogs.map((auditLog) => ({
+        id: auditLog.id,
+        workspaceId: auditLog.workspaceId,
+        actorUserId: auditLog.actorUserId,
+        actorDisplayName: auditLog.actorDisplayName,
+        action: auditLog.action as LocalStoreState['auditLogs'][number]['action'],
+        entityType: auditLog.entityType as LocalStoreState['auditLogs'][number]['entityType'],
+        entityId: auditLog.entityId,
+        entityLabel: auditLog.entityLabel,
+        targetUserId: auditLog.targetUserId,
+        targetDisplayName: auditLog.targetDisplayName,
+        metadata: this.normalizeAuditMetadata(auditLog.metadata),
+        createdAt: auditLog.createdAt.toISOString(),
+      })),
+      presences: presences.map((presence) => ({
+        userId: presence.userId,
+        status: presence.status === 'online' ? 'online' : 'offline',
+        lastSeenAt: presence.lastSeenAt.toISOString(),
+        updatedAt: presence.updatedAt.toISOString(),
+      })),
       messages: messages.map((message) => ({
         id: message.id,
         workspaceId: message.workspaceId,
         channelId: message.channelId,
         senderId: message.senderId,
+        parentMessageId: message.parentMessageId,
         content: message.content,
         createdAt: message.createdAt.toISOString(),
         updatedAt: message.updatedAt.toISOString(),
         deletedAt: message.deletedAt?.toISOString() ?? null,
+      })),
+      messageReactions: messageReactions.map((reaction) => ({
+        id: reaction.id,
+        workspaceId: reaction.workspaceId,
+        channelId: reaction.channelId,
+        messageId: reaction.messageId,
+        userId: reaction.userId,
+        emoji: reaction.emoji,
+        createdAt: reaction.createdAt.toISOString(),
       })),
     };
   }
@@ -314,9 +470,12 @@ export class LocalStoreService {
 
   private async persistDatabaseState(client: DatabaseClient, state: LocalStoreState) {
     await client.notification.deleteMany();
+    await client.notificationPreference.deleteMany();
+    await client.auditLog.deleteMany();
     await client.fileAttachment.deleteMany();
     await client.channelReadState.deleteMany();
     await client.channelMembership.deleteMany();
+    await client.messageReaction.deleteMany();
     await client.message.deleteMany();
     await client.invitation.deleteMany();
     await client.workspaceMembership.deleteMany();
@@ -324,6 +483,8 @@ export class LocalStoreService {
     await client.session.deleteMany();
     await client.presence.deleteMany();
     await client.workspace.deleteMany();
+    await client.organizationMembership.deleteMany();
+    await client.organization.deleteMany();
     await client.user.deleteMany();
     await client.appStateMeta.deleteMany();
 
@@ -349,10 +510,36 @@ export class LocalStoreService {
       });
     }
 
+    if (state.organizations.length > 0) {
+      await client.organization.createMany({
+        data: state.organizations.map((organization) => ({
+          id: organization.id,
+          name: organization.name,
+          slug: organization.slug,
+          createdById: organization.createdById,
+          createdAt: new Date(organization.createdAt),
+          updatedAt: new Date(organization.updatedAt),
+        })),
+      });
+    }
+
+    if (state.organizationMemberships.length > 0) {
+      await client.organizationMembership.createMany({
+        data: state.organizationMemberships.map((membership) => ({
+          id: membership.id,
+          organizationId: membership.organizationId,
+          userId: membership.userId,
+          role: membership.role,
+          joinedAt: new Date(membership.joinedAt),
+        })),
+      });
+    }
+
     if (state.workspaces.length > 0) {
       await client.workspace.createMany({
         data: state.workspaces.map((workspace) => ({
           id: workspace.id,
+          organizationId: workspace.organizationId,
           name: workspace.name,
           slug: workspace.slug,
           createdById: workspace.createdById,
@@ -455,6 +642,7 @@ export class LocalStoreService {
           workspaceId: message.workspaceId,
           channelId: message.channelId,
           senderId: message.senderId,
+          parentMessageId: message.parentMessageId,
           content: message.content,
           createdAt: new Date(message.createdAt),
           updatedAt: new Date(message.updatedAt),
@@ -496,5 +684,91 @@ export class LocalStoreService {
         })),
       });
     }
+
+    if (state.notificationPreferences.length > 0) {
+      await client.notificationPreference.createMany({
+        data: state.notificationPreferences.map((preference) => ({
+          id: preference.id,
+          workspaceId: preference.workspaceId,
+          userId: preference.userId,
+          muteAll: preference.muteAll,
+          allowMentions: preference.allowMentions,
+          emailMentions: preference.emailMentions,
+          emailDigest: preference.emailDigest,
+          pushMentions: preference.pushMentions,
+          pushDigest: preference.pushDigest,
+          mutedChannelIds: preference.mutedChannelIds,
+          digestMode: preference.digestMode,
+          lastDigestAt: preference.lastDigestAt ? new Date(preference.lastDigestAt) : null,
+          createdAt: new Date(preference.createdAt),
+          updatedAt: new Date(preference.updatedAt),
+        })),
+      });
+    }
+
+    if (state.auditLogs.length > 0) {
+      await client.auditLog.createMany({
+        data: state.auditLogs.map((auditLog) => ({
+          id: auditLog.id,
+          workspaceId: auditLog.workspaceId,
+          actorUserId: auditLog.actorUserId,
+          actorDisplayName: auditLog.actorDisplayName,
+          action: auditLog.action,
+          entityType: auditLog.entityType,
+          entityId: auditLog.entityId,
+          entityLabel: auditLog.entityLabel,
+          targetUserId: auditLog.targetUserId,
+          targetDisplayName: auditLog.targetDisplayName,
+          metadata: auditLog.metadata,
+          createdAt: new Date(auditLog.createdAt),
+        })),
+      });
+    }
+
+    if (state.presences.length > 0) {
+      await client.presence.createMany({
+        data: state.presences.map((presence) => ({
+          userId: presence.userId,
+          status: presence.status,
+          lastSeenAt: new Date(presence.lastSeenAt),
+          updatedAt: new Date(presence.updatedAt),
+        })),
+      });
+    }
+
+    if (state.messageReactions.length > 0) {
+      await client.messageReaction.createMany({
+        data: state.messageReactions.map((reaction) => ({
+          id: reaction.id,
+          workspaceId: reaction.workspaceId,
+          channelId: reaction.channelId,
+          messageId: reaction.messageId,
+          userId: reaction.userId,
+          emoji: reaction.emoji,
+          createdAt: new Date(reaction.createdAt),
+        })),
+      });
+    }
+  }
+
+  private normalizeAuditMetadata(metadata: Prisma.JsonValue | null | undefined) {
+    if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) {
+      return {};
+    }
+
+    return Object.fromEntries(
+      Object.entries(metadata).flatMap(([key, value]) => {
+        if (
+          value === null ||
+          typeof value === 'string' ||
+          typeof value === 'number' ||
+          typeof value === 'boolean'
+        ) {
+          return [[key, value]];
+        }
+
+        return [];
+      }),
+    );
   }
 }

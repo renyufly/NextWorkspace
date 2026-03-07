@@ -27,8 +27,13 @@ async function bootstrap() {
       forbidNonWhitelisted: true,
     }),
   );
+  const corsOrigin = app.get(ConfigService).get<string>('CORS_ORIGIN', 'http://localhost:3000');
+
   app.enableCors({
-    origin: app.get(ConfigService).get<string>('CORS_ORIGIN', 'http://localhost:3000'),
+    origin: corsOrigin
+      .split(',')
+      .map((origin) => origin.trim())
+      .filter((origin) => origin.length > 0),
     credentials: true,
   });
 

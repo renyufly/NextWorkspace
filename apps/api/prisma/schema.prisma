@@ -26,6 +26,31 @@ enum MessageType {
 
 enum NotificationType {
   MENTION
+  DIGEST
+}
+
+enum DigestMode {
+  OFF
+  DAILY
+}
+
+model AuditLog {
+  id                String   @id
+  workspaceId       String
+  actorUserId       String
+  actorDisplayName  String
+  action            String
+  entityType        String
+  entityId          String
+  entityLabel       String?
+  targetUserId      String?
+  targetDisplayName String?
+  metadata          Json?
+  createdAt         DateTime
+
+  @@index([workspaceId, createdAt(sort: Desc)])
+  @@index([workspaceId, action, createdAt(sort: Desc)])
+  @@index([workspaceId, actorUserId, createdAt(sort: Desc)])
 }
 
 model AppStateMeta {
@@ -43,10 +68,13 @@ model User {
   createdAt          DateTime
   updatedAt          DateTime
   sessions           Session[]
+  organizationMemberships OrganizationMembership[]
   memberships        WorkspaceMembership[]
   channelMemberships ChannelMembership[]
   sentInvites        Invitation[]          @relation("InvitationSender")
   messages           Message[]
+  messageReactions   MessageReaction[]
+  notificationPreferences NotificationPreference[]
   presence           Presence?
 }
 
@@ -65,16 +93,44 @@ model Session {
   @@index([userId])
 }
 
+model Organization {
+  id           String                   @id
+  name         String
+  slug         String                   @unique
+  createdById  String
+  createdAt    DateTime
+  updatedAt    DateTime
+  memberships  OrganizationMembership[]
+  workspaces   Workspace[]
+}
+
+model OrganizationMembership {
+  id             String        @id
+  organizationId String
+  userId         String
+  role           WorkspaceRole @default(MEMBER)
+  joinedAt       DateTime
+  organization   Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user           User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, userId])
+  @@index([userId])
+}
+
 model Workspace {
   id           String                @id
+  organizationId String
   name         String
   slug         String                @unique
   createdById  String
   createdAt    DateTime
   updatedAt    DateTime
+  organization Organization          @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   memberships  WorkspaceMembership[]
   invitations  Invitation[]
   channels     Channel[]
+
+  @@index([organizationId])
 }
 
 model WorkspaceMembership {
@@ -156,6 +212,7 @@ model Message {
   workspaceId    String
   channelId      String
   senderId       String
+  parentMessageId String?
   type           MessageType  @default(TEXT)
   content        String
   createdAt      DateTime
@@ -163,10 +220,30 @@ model Message {
   deletedAt      DateTime?
   channel        Channel      @relation(fields: [channelId], references: [id], onDelete: Cascade)
   sender         User         @relation(fields: [senderId], references: [id], onDelete: Cascade)
+  parentMessage  Message?     @relation("MessageThread", fields: [parentMessageId], references: [id], onDelete: Cascade)
+  threadReplies  Message[]    @relation("MessageThread")
+  reactions      MessageReaction[]
   attachments    FileAttachment[]
 
   @@index([channelId, createdAt(sort: Desc)])
   @@index([workspaceId, createdAt(sort: Desc)])
+  @@index([parentMessageId, createdAt(sort: Desc)])
+}
+
+model MessageReaction {
+  id          String   @id
+  workspaceId String
+  channelId   String
+  messageId   String
+  userId      String
+  emoji       String
+  createdAt   DateTime
+  message     Message  @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([messageId, userId, emoji])
+  @@index([workspaceId, messageId])
+  @@index([userId])
 }
 
 model FileAttachment {
@@ -199,6 +276,28 @@ model Notification {
 
   @@index([userId, createdAt(sort: Desc)])
   @@index([workspaceId, userId])
+}
+
+model NotificationPreference {
+  id              String     @id
+  workspaceId     String
+  userId          String
+  muteAll         Boolean    @default(false)
+  allowMentions   Boolean    @default(true)
+  emailMentions   Boolean    @default(false)
+  emailDigest     Boolean    @default(false)
+  pushMentions    Boolean    @default(false)
+  pushDigest      Boolean    @default(false)
+  mutedChannelIds String[]
+  digestMode      DigestMode @default(OFF)
+  lastDigestAt    DateTime?
+  createdAt       DateTime
+  updatedAt       DateTime
+  user            User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, userId])
+  @@index([userId])
+  @@index([workspaceId])
 }
 
 model Presence {

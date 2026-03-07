@@ -1,4 +1,4 @@
-import { IsArray, IsOptional, IsString, MaxLength, MinLength } from 'class-validator';
+import { IsArray, IsOptional, IsString, IsUUID, MaxLength, MinLength } from 'class-validator';
 
 export class SendMessageDto {
   @IsString()
@@ -10,4 +10,8 @@ export class SendMessageDto {
   @IsArray()
   @IsString({ each: true })
   attachmentIds?: string[];
+
+  @IsOptional()
+  @IsUUID()
+  parentMessageId?: string;
 }

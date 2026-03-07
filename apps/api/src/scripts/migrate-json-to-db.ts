@@ -17,6 +17,8 @@ type Options = {
 type CountSummary = {
   users: number;
   sessions: number;
+  organizations: number;
+  organizationMemberships: number;
   workspaces: number;
   memberships: number;
   invitations: number;
@@ -25,10 +27,21 @@ type CountSummary = {
   channelReadStates: number;
   attachments: number;
   notifications: number;
+  auditLogs: number;
   messages: number;
 };
 
 type DatabaseClient = PrismaClient | Prisma.TransactionClient;
+
+const roleOrder = {
+  OWNER: 0,
+  ADMIN: 1,
+  MEMBER: 2,
+} as const;
+
+function compareRoles(left: keyof typeof roleOrder, right: keyof typeof roleOrder) {
+  return roleOrder[left] - roleOrder[right];
+}
 
 async function main() {
   const options = parseArgs(process.argv.slice(2));
@@ -151,6 +164,46 @@ async function loadState(sourcePath: string): Promise<LocalStoreState> {
 
 function normalizeState(rawState: Partial<LocalStoreState>): LocalStoreState {
   const emptyState = createEmptyState();
+  const existingOrganizations = rawState.organizations ?? emptyState.organizations;
+  const existingOrganizationMemberships = rawState.organizationMemberships ?? emptyState.organizationMemberships;
+  const existingWorkspaces = rawState.workspaces ?? emptyState.workspaces;
+  const workspaceToOrganization = new Map(existingWorkspaces.map((workspace) => [workspace.id, workspace.organizationId ?? workspace.id]));
+  const backfilledOrganizations = existingOrganizations.length > 0
+    ? existingOrganizations
+    : existingWorkspaces.map((workspace) => ({
+        id: workspace.organizationId ?? workspace.id,
+        name: workspace.name,
+        slug: workspace.slug,
+        createdById: workspace.createdById,
+        createdAt: workspace.createdAt,
+        updatedAt: workspace.updatedAt,
+      }));
+  const backfilledOrganizationMemberships = existingOrganizationMemberships.length > 0
+    ? existingOrganizationMemberships
+    : Array.from(
+        (rawState.memberships ?? emptyState.memberships).reduce((map, membership) => {
+          const organizationId = workspaceToOrganization.get(membership.workspaceId);
+
+          if (!organizationId) {
+            return map;
+          }
+
+          const key = `${organizationId}:${membership.userId}`;
+          const current = map.get(key);
+
+          if (!current || compareRoles(membership.role, current.role) < 0) {
+            map.set(key, {
+              id: current?.id ?? `${organizationId}:${membership.userId}`,
+              organizationId,
+              userId: membership.userId,
+              role: membership.role,
+              joinedAt: current?.joinedAt ?? membership.joinedAt,
+            });
+          }
+
+          return map;
+        }, new Map<string, LocalStoreState['organizationMemberships'][number]>()),
+      ).map(([, membership]) => membership);
 
   return {
     meta: {
@@ -160,7 +213,12 @@ function normalizeState(rawState: Partial<LocalStoreState>): LocalStoreState {
     },
     users: rawState.users ?? emptyState.users,
     sessions: rawState.sessions ?? emptyState.sessions,
-    workspaces: rawState.workspaces ?? emptyState.workspaces,
+    organizations: backfilledOrganizations,
+    organizationMemberships: backfilledOrganizationMemberships,
+    workspaces: existingWorkspaces.map((workspace) => ({
+      ...workspace,
+      organizationId: workspace.organizationId ?? workspace.id,
+    })),
     memberships: rawState.memberships ?? emptyState.memberships,
     invitations: rawState.invitations ?? emptyState.invitations,
     channels: rawState.channels ?? emptyState.channels,
@@ -168,7 +226,17 @@ function normalizeState(rawState: Partial<LocalStoreState>): LocalStoreState {
     channelReadStates: rawState.channelReadStates ?? emptyState.channelReadStates,
     attachments: rawState.attachments ?? emptyState.attachments,
     notifications: rawState.notifications ?? emptyState.notifications,
+    notificationPreferences: (rawState.notificationPreferences ?? emptyState.notificationPreferences).map((preference) => ({
+      ...preference,
+      emailMentions: preference.emailMentions ?? false,
+      emailDigest: preference.emailDigest ?? false,
+      pushMentions: preference.pushMentions ?? false,
+      pushDigest: preference.pushDigest ?? false,
+    })),
+    auditLogs: rawState.auditLogs ?? emptyState.auditLogs,
+    presences: rawState.presences ?? emptyState.presences,
     messages: rawState.messages ?? emptyState.messages,
+    messageReactions: rawState.messageReactions ?? emptyState.messageReactions,
   };
 }
 
@@ -176,6 +244,8 @@ function summarizeState(state: LocalStoreState): CountSummary {
   return {
     users: state.users.length,
     sessions: state.sessions.length,
+    organizations: state.organizations.length,
+    organizationMemberships: state.organizationMemberships.length,
     workspaces: state.workspaces.length,
     memberships: state.memberships.length,
     invitations: state.invitations.length,
@@ -184,6 +254,7 @@ function summarizeState(state: LocalStoreState): CountSummary {
     channelReadStates: state.channelReadStates.length,
     attachments: state.attachments.length,
     notifications: state.notifications.length,
+    auditLogs: state.auditLogs.length,
     messages: state.messages.length,
   };
 }
@@ -192,6 +263,8 @@ async function readTargetCounts(prisma: PrismaClient): Promise<CountSummary> {
   const [
     users,
     sessions,
+    organizations,
+    organizationMemberships,
     workspaces,
     memberships,
     invitations,
@@ -200,10 +273,13 @@ async function readTargetCounts(prisma: PrismaClient): Promise<CountSummary> {
     channelReadStates,
     attachments,
     notifications,
+    auditLogs,
     messages,
   ] = await Promise.all([
     prisma.user.count(),
     prisma.session.count(),
+    prisma.organization.count(),
+    prisma.organizationMembership.count(),
     prisma.workspace.count(),
     prisma.workspaceMembership.count(),
     prisma.invitation.count(),
@@ -212,12 +288,15 @@ async function readTargetCounts(prisma: PrismaClient): Promise<CountSummary> {
     prisma.channelReadState.count(),
     prisma.fileAttachment.count(),
     prisma.notification.count(),
+    prisma.auditLog.count(),
     prisma.message.count(),
   ]);
 
   return {
     users,
     sessions,
+    organizations,
+    organizationMemberships,
     workspaces,
     memberships,
     invitations,
@@ -226,6 +305,7 @@ async function readTargetCounts(prisma: PrismaClient): Promise<CountSummary> {
     channelReadStates,
     attachments,
     notifications,
+    auditLogs,
     messages,
   };
 }
@@ -234,6 +314,8 @@ function formatCounts(counts: CountSummary) {
   return [
     `users=${counts.users}`,
     `sessions=${counts.sessions}`,
+    `organizations=${counts.organizations}`,
+    `organizationMemberships=${counts.organizationMemberships}`,
     `workspaces=${counts.workspaces}`,
     `memberships=${counts.memberships}`,
     `invitations=${counts.invitations}`,
@@ -242,6 +324,7 @@ function formatCounts(counts: CountSummary) {
     `channelReadStates=${counts.channelReadStates}`,
     `attachments=${counts.attachments}`,
     `notifications=${counts.notifications}`,
+    `auditLogs=${counts.auditLogs}`,
     `messages=${counts.messages}`,
   ].join(' ');
 }
@@ -251,6 +334,7 @@ function redactDatabaseUrl(databaseUrl: string) {
 }
 
 async function persistState(prisma: DatabaseClient, state: LocalStoreState) {
+  await prisma.auditLog.deleteMany();
   await prisma.notification.deleteMany();
   await prisma.fileAttachment.deleteMany();
   await prisma.channelReadState.deleteMany();
@@ -262,6 +346,8 @@ async function persistState(prisma: DatabaseClient, state: LocalStoreState) {
   await prisma.session.deleteMany();
   await prisma.presence.deleteMany();
   await prisma.workspace.deleteMany();
+  await prisma.organizationMembership.deleteMany();
+  await prisma.organization.deleteMany();
   await prisma.user.deleteMany();
   await prisma.appStateMeta.deleteMany();
 
@@ -287,10 +373,36 @@ async function persistState(prisma: DatabaseClient, state: LocalStoreState) {
     });
   }
 
+  if (state.organizations.length > 0) {
+    await prisma.organization.createMany({
+      data: state.organizations.map((organization) => ({
+        id: organization.id,
+        name: organization.name,
+        slug: organization.slug,
+        createdById: organization.createdById,
+        createdAt: new Date(organization.createdAt),
+        updatedAt: new Date(organization.updatedAt),
+      })),
+    });
+  }
+
+  if (state.organizationMemberships.length > 0) {
+    await prisma.organizationMembership.createMany({
+      data: state.organizationMemberships.map((membership) => ({
+        id: membership.id,
+        organizationId: membership.organizationId,
+        userId: membership.userId,
+        role: membership.role,
+        joinedAt: new Date(membership.joinedAt),
+      })),
+    });
+  }
+
   if (state.workspaces.length > 0) {
     await prisma.workspace.createMany({
       data: state.workspaces.map((workspace) => ({
         id: workspace.id,
+        organizationId: workspace.organizationId,
         name: workspace.name,
         slug: workspace.slug,
         createdById: workspace.createdById,
@@ -431,6 +543,46 @@ async function persistState(prisma: DatabaseClient, state: LocalStoreState) {
         messageId: notification.messageId,
         readAt: notification.readAt ? new Date(notification.readAt) : null,
         createdAt: new Date(notification.createdAt),
+      })),
+    });
+  }
+
+  if (state.auditLogs.length > 0) {
+    await prisma.auditLog.createMany({
+      data: state.auditLogs.map((auditLog) => ({
+        id: auditLog.id,
+        workspaceId: auditLog.workspaceId,
+        actorUserId: auditLog.actorUserId,
+        actorDisplayName: auditLog.actorDisplayName,
+        action: auditLog.action,
+        entityType: auditLog.entityType,
+        entityId: auditLog.entityId,
+        entityLabel: auditLog.entityLabel,
+        targetUserId: auditLog.targetUserId,
+        targetDisplayName: auditLog.targetDisplayName,
+        metadata: auditLog.metadata,
+        createdAt: new Date(auditLog.createdAt),
+      })),
+    });
+  }
+
+  if (state.notificationPreferences.length > 0) {
+    await prisma.notificationPreference.createMany({
+      data: state.notificationPreferences.map((preference) => ({
+        id: preference.id,
+        workspaceId: preference.workspaceId,
+        userId: preference.userId,
+        muteAll: preference.muteAll,
+        allowMentions: preference.allowMentions,
+        emailMentions: preference.emailMentions,
+        emailDigest: preference.emailDigest,
+        pushMentions: preference.pushMentions,
+        pushDigest: preference.pushDigest,
+        mutedChannelIds: preference.mutedChannelIds,
+        digestMode: preference.digestMode,
+        lastDigestAt: preference.lastDigestAt ? new Date(preference.lastDigestAt) : null,
+        createdAt: new Date(preference.createdAt),
+        updatedAt: new Date(preference.updatedAt),
       })),
     });
   }

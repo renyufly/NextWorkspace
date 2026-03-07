@@ -7,20 +7,30 @@ import {
   useQuery,
   useQueryClient,
 } from '@tanstack/react-query';
-import { useDeferredValue, useEffect, useRef, useState, startTransition } from 'react';
+import { type ReactNode, useDeferredValue, useEffect, useRef, useState, startTransition } from 'react';
 
 import type {
+  AuditLogSummary,
   AuthResponse,
   AuthUser,
   ChannelMemberSummary,
+  DigestRunSummary,
   ChannelSummary,
   FileAttachmentSummary,
   MessagePage,
   MessageSummary,
+  NotificationPreferenceSummary,
   NotificationSummary,
+  OrganizationMemberSummary,
+  OrganizationSummary,
+  OrganizationWorkspaceSummary,
+  RealtimeSyncSummary,
+  WorkspaceAnalyticsSummary,
+  WorkspaceSearchSummary,
   WorkspaceInvitationSummary,
   WorkspaceMemberSummary,
   WorkspaceRole,
+  WorkspaceSearchScope,
   WorkspaceSummary,
 } from '@worknext/shared';
 
@@ -45,6 +55,30 @@ const statusItems = [
   'Message timeline and composer',
 ];
 const memberRoleOptions: WorkspaceRole[] = ['OWNER', 'ADMIN', 'MEMBER'];
+
+function requestRealtimeSync(
+  socket: RealtimeSocket,
+  workspaceId: string,
+  channelId: string | null,
+): Promise<RealtimeSyncSummary | null> {
+  return new Promise((resolve) => {
+    socket.timeout(5000).emit(
+      'state:sync',
+      {
+        workspaceId,
+        channelId,
+      },
+      (error: unknown, response: RealtimeSyncSummary) => {
+        if (error) {
+          resolve(null);
+          return;
+        }
+
+        resolve(response);
+      },
+    );
+  });
+}
 
 export default function HomePage() {
   const queryClient = useQueryClient();
@@ -72,11 +106,18 @@ export default function HomePage() {
     type: 'PUBLIC' as 'PUBLIC' | 'PRIVATE',
   });
   const [messageDraft, setMessageDraft] = useState('');
+  const [threadDraft, setThreadDraft] = useState('');
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [editingMessageDraft, setEditingMessageDraft] = useState('');
+  const [activeThreadMessageId, setActiveThreadMessageId] = useState<string | null>(null);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchScope, setSearchScope] = useState<WorkspaceSearchScope>('ALL');
+  const [searchOnlyCurrentChannel, setSearchOnlyCurrentChannel] = useState(false);
+  const [auditActionFilter, setAuditActionFilter] = useState<'ALL' | AuditLogSummary['action']>('ALL');
   const [inviteForm, setInviteForm] = useState({ email: '', role: 'MEMBER' as WorkspaceRole });
   const [acceptInviteToken, setAcceptInviteToken] = useState('');
   const [channelMemberUserId, setChannelMemberUserId] = useState('');
+  const [organizationWorkspaceName, setOrganizationWorkspaceName] = useState('');
   const [pendingAttachments, setPendingAttachments] = useState<FileAttachmentSummary[]>([]);
   const [isUploadingAttachments, setIsUploadingAttachments] = useState(false);
   const [typingUsers, setTypingUsers] = useState<string[]>([]);
@@ -107,6 +148,15 @@ export default function HomePage() {
     if (!selectedWorkspaceId) {
       setIsWorkspaceSettingsOpen(false);
     }
+  }, [selectedWorkspaceId]);
+
+  useEffect(() => {
+    setActiveThreadMessageId(null);
+    setThreadDraft('');
+  }, [selectedChannelId, selectedWorkspaceId]);
+
+  useEffect(() => {
+    setSearchOnlyCurrentChannel(false);
   }, [selectedWorkspaceId]);
 
   useEffect(() => {
@@ -194,6 +244,12 @@ export default function HomePage() {
     enabled: Boolean(accessToken && selectedWorkspaceId),
   });
 
+  const organizationsQuery = useQuery<OrganizationSummary[]>({
+    queryKey: ['organizations', accessToken],
+    queryFn: () => apiRequest<OrganizationSummary[]>('/organizations', { accessToken }),
+    enabled: Boolean(accessToken),
+  });
+
   useEffect(() => {
     if (!channelsQuery.data?.length) {
       return;
@@ -235,6 +291,8 @@ export default function HomePage() {
 
   const currentWorkspaceRole =
     workspacesQuery.data?.find((workspace) => workspace.id === selectedWorkspaceId)?.role;
+  const currentOrganizationId =
+    workspacesQuery.data?.find((workspace) => workspace.id === selectedWorkspaceId)?.organizationId ?? null;
 
   const membersQuery = useQuery<WorkspaceMemberSummary[]>({
     queryKey: ['members', accessToken, selectedWorkspaceId],
@@ -272,6 +330,48 @@ export default function HomePage() {
     enabled: Boolean(accessToken && selectedWorkspaceId && selectedChannelId),
   });
 
+  const notificationPreferencesQuery = useQuery<NotificationPreferenceSummary>({
+    queryKey: ['notification-preferences', accessToken, selectedWorkspaceId],
+    queryFn: () =>
+      apiRequest<NotificationPreferenceSummary>(`/notifications/preferences?workspaceId=${selectedWorkspaceId}`, {
+        accessToken,
+      }),
+    enabled: Boolean(accessToken && selectedWorkspaceId),
+  });
+
+  const threadMessagesQuery = useQuery<MessageSummary[]>({
+    queryKey: ['thread-messages', accessToken, selectedWorkspaceId, selectedChannelId, activeThreadMessageId],
+    queryFn: () =>
+      apiRequest<MessageSummary[]>(
+        `/workspaces/${selectedWorkspaceId}/channels/${selectedChannelId}/messages/${activeThreadMessageId}/thread`,
+        { accessToken },
+      ),
+    enabled: Boolean(accessToken && selectedWorkspaceId && selectedChannelId && activeThreadMessageId),
+  });
+
+  const deferredSearchQuery = useDeferredValue(searchQuery.trim());
+  const searchChannelId = searchOnlyCurrentChannel ? selectedChannelId : null;
+  const searchResultsQuery = useQuery<WorkspaceSearchSummary>({
+    queryKey: ['workspace-search', accessToken, selectedWorkspaceId, deferredSearchQuery, searchScope, searchChannelId],
+    queryFn: () => {
+      const params = new URLSearchParams({
+        q: deferredSearchQuery,
+        scope: searchScope,
+        limit: '8',
+      });
+
+      if (searchChannelId) {
+        params.set('channelId', searchChannelId);
+      }
+
+      return apiRequest<WorkspaceSearchSummary>(
+        `/workspaces/${selectedWorkspaceId}/search?${params.toString()}`,
+        { accessToken },
+      );
+    },
+    enabled: Boolean(accessToken && selectedWorkspaceId && deferredSearchQuery.length >= 2),
+  });
+
   const deferredMessages = useDeferredValue(
     (messagesQuery.data?.pages ?? [])
       .slice()
@@ -286,6 +386,50 @@ export default function HomePage() {
   const invitationsQueryKey = ['invitations', accessToken, selectedWorkspaceId] as const;
   const notificationsQueryKey = ['notifications', accessToken, selectedWorkspaceId] as const;
   const channelMembersQueryKey = ['channel-members', accessToken, selectedWorkspaceId, selectedChannelId] as const;
+  const notificationPreferencesQueryKey = ['notification-preferences', accessToken, selectedWorkspaceId] as const;
+  const threadMessagesQueryKey = ['thread-messages', accessToken, selectedWorkspaceId, selectedChannelId, activeThreadMessageId] as const;
+  const auditLogsQueryKey = ['audit-logs', accessToken, selectedWorkspaceId, auditActionFilter] as const;
+  const analyticsQueryKey = ['workspace-analytics', accessToken, selectedWorkspaceId] as const;
+
+  const auditLogsQuery = useQuery<AuditLogSummary[]>({
+    queryKey: auditLogsQueryKey,
+    queryFn: () => {
+      const params = new URLSearchParams({ limit: '12' });
+
+      if (auditActionFilter !== 'ALL') {
+        params.set('action', auditActionFilter);
+      }
+
+      return apiRequest<AuditLogSummary[]>(`/workspaces/${selectedWorkspaceId}/audit?${params.toString()}`, {
+        accessToken,
+      });
+    },
+    enabled: Boolean(accessToken && selectedWorkspaceId && currentWorkspaceCanManage(currentWorkspaceRole)),
+  });
+
+  const analyticsQuery = useQuery<WorkspaceAnalyticsSummary>({
+    queryKey: analyticsQueryKey,
+    queryFn: () => apiRequest<WorkspaceAnalyticsSummary>(`/workspaces/${selectedWorkspaceId}/analytics`, { accessToken }),
+    enabled: Boolean(accessToken && selectedWorkspaceId && currentWorkspaceCanManage(currentWorkspaceRole)),
+  });
+
+  const organizationWorkspacesQueryKey = ['organization-workspaces', accessToken, currentOrganizationId] as const;
+  const organizationMembersQueryKey = ['organization-members', accessToken, currentOrganizationId] as const;
+
+  const currentOrganization = organizationsQuery.data?.find((organization) => organization.id === currentOrganizationId) ?? null;
+
+  const organizationWorkspacesQuery = useQuery<OrganizationWorkspaceSummary[]>({
+    queryKey: organizationWorkspacesQueryKey,
+    queryFn: () => apiRequest<OrganizationWorkspaceSummary[]>(`/organizations/${currentOrganizationId}/workspaces`, { accessToken }),
+    enabled: Boolean(accessToken && currentOrganizationId),
+  });
+
+  const organizationMembersQuery = useQuery<OrganizationMemberSummary[]>({
+    queryKey: organizationMembersQueryKey,
+    queryFn: () => apiRequest<OrganizationMemberSummary[]>(`/organizations/${currentOrganizationId}/members`, { accessToken }),
+    enabled: Boolean(accessToken && currentOrganizationId && currentWorkspaceCanManage(currentOrganization?.role)),
+    retry: false,
+  });
 
   function updateMessagePages(
     updater: (pages: InfiniteData<MessagePage, string | null>) => InfiniteData<MessagePage, string | null>,
@@ -322,6 +466,29 @@ export default function HomePage() {
 
   function updateNotificationList(updater: (notifications: NotificationSummary[]) => NotificationSummary[]) {
     queryClient.setQueryData<NotificationSummary[]>(notificationsQueryKey, (current) => updater(current ?? []));
+  }
+
+  function updateNotificationPreferences(
+    updater: (preferences: NotificationPreferenceSummary) => NotificationPreferenceSummary,
+  ) {
+    queryClient.setQueryData<NotificationPreferenceSummary>(notificationPreferencesQueryKey, (current) =>
+      updater(
+        current ?? {
+          workspaceId: selectedWorkspaceId ?? '',
+          userId: meQuery.data?.id ?? '',
+          muteAll: false,
+          allowMentions: true,
+          emailMentions: false,
+          emailDigest: false,
+          pushMentions: false,
+          pushDigest: false,
+          mutedChannelIds: [],
+          digestMode: 'OFF',
+          lastDigestAt: null,
+          updatedAt: new Date().toISOString(),
+        },
+      ),
+    );
   }
 
   const authMutation = useMutation<AuthResponse, Error, AuthMode>({
@@ -377,6 +544,8 @@ export default function HomePage() {
       const previousSelectedChannelId = selectedChannelId;
       const optimisticWorkspace: WorkspaceSummary = {
         id: `optimistic-workspace-${crypto.randomUUID()}`,
+        organizationId: `optimistic-organization-${crypto.randomUUID()}`,
+        organizationName: trimmedName,
         name: trimmedName,
         slug: trimmedName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'workspace',
         role: 'OWNER',
@@ -519,12 +688,16 @@ export default function HomePage() {
         id: `optimistic-message-${crypto.randomUUID()}`,
         workspaceId: selectedWorkspaceId,
         channelId: selectedChannelId,
+        parentMessageId: null,
         content: trimmedContent,
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
         deletedAt: null,
         isDeleted: false,
         isOwnMessage: true,
+        threadReplyCount: 0,
+        reactions: [],
+        readReceipts: [],
         attachments: input.attachments,
         sender: {
           id: meQuery.data.id,
@@ -707,6 +880,87 @@ export default function HomePage() {
     },
   });
 
+  const sendThreadReplyMutation = useMutation({
+    mutationFn: (input: { content: string; parentMessageId: string }) =>
+      apiRequest<MessageSummary>(`/workspaces/${selectedWorkspaceId}/channels/${selectedChannelId}/messages`, {
+        method: 'POST',
+        accessToken,
+        body: input,
+      }),
+    onSuccess: () => {
+      setThreadDraft('');
+      setErrorMessage(null);
+      void queryClient.invalidateQueries({ queryKey: threadMessagesQueryKey });
+      void queryClient.invalidateQueries({ queryKey: messagesQueryKey });
+    },
+    onError: (error) => {
+      setErrorMessage(getErrorMessage(error));
+    },
+  });
+
+  const addReactionMutation = useMutation({
+    mutationFn: ({ messageId, emoji }: { messageId: string; emoji: string }) =>
+      apiRequest<MessageSummary>(`/workspaces/${selectedWorkspaceId}/channels/${selectedChannelId}/messages/${messageId}/reactions`, {
+        method: 'POST',
+        accessToken,
+        body: { emoji },
+      }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: messagesQueryKey });
+      void queryClient.invalidateQueries({ queryKey: threadMessagesQueryKey });
+    },
+    onError: (error) => setErrorMessage(getErrorMessage(error)),
+  });
+
+  const removeReactionMutation = useMutation({
+    mutationFn: ({ messageId, emoji }: { messageId: string; emoji: string }) =>
+      apiRequest<MessageSummary>(`/workspaces/${selectedWorkspaceId}/channels/${selectedChannelId}/messages/${messageId}/reactions`, {
+        method: 'DELETE',
+        accessToken,
+        body: { emoji },
+      }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: messagesQueryKey });
+      void queryClient.invalidateQueries({ queryKey: threadMessagesQueryKey });
+    },
+    onError: (error) => setErrorMessage(getErrorMessage(error)),
+  });
+
+  const updateNotificationPreferencesMutation = useMutation({
+    mutationFn: (input: Partial<NotificationPreferenceSummary>) =>
+      apiRequest<NotificationPreferenceSummary>('/notifications/preferences', {
+        method: 'PATCH',
+        accessToken,
+        body: {
+          workspaceId: selectedWorkspaceId,
+          ...input,
+        },
+      }),
+    onMutate: async (input: Partial<NotificationPreferenceSummary>) => {
+      await queryClient.cancelQueries({ queryKey: notificationPreferencesQueryKey });
+
+      const previousPreferences = queryClient.getQueryData<NotificationPreferenceSummary>(notificationPreferencesQueryKey);
+      updateNotificationPreferences((current) => ({
+        ...current,
+        ...input,
+        updatedAt: new Date().toISOString(),
+      }));
+
+      return { previousPreferences };
+    },
+    onSuccess: (preferences) => {
+      queryClient.setQueryData(notificationPreferencesQueryKey, preferences);
+      setErrorMessage(null);
+    },
+    onError: (error, _variables, context) => {
+      if (context?.previousPreferences) {
+        queryClient.setQueryData(notificationPreferencesQueryKey, context.previousPreferences);
+      }
+
+      setErrorMessage(getErrorMessage(error));
+    },
+  });
+
   const createInvitationMutation = useMutation({
     mutationFn: (input: { email: string; role: WorkspaceRole }) =>
       apiRequest<WorkspaceInvitationSummary>(`/workspaces/${selectedWorkspaceId}/invitations`, {
@@ -853,6 +1107,34 @@ export default function HomePage() {
     },
   });
 
+  const runDigestMutation = useMutation({
+    mutationFn: () =>
+      apiRequest<DigestRunSummary>('/notifications/digest/run', {
+        method: 'POST',
+        accessToken,
+        body: { workspaceId: selectedWorkspaceId },
+      }),
+    onSuccess: (result) => {
+      const notification = result.notification;
+
+      if (notification) {
+        updateNotificationList((current) => [notification, ...current]);
+      }
+
+      updateNotificationPreferences((current) => ({
+        ...current,
+        lastDigestAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      }));
+      setErrorMessage(null);
+      void queryClient.invalidateQueries({ queryKey: notificationsQueryKey });
+      void queryClient.invalidateQueries({ queryKey: notificationPreferencesQueryKey });
+    },
+    onError: (error) => {
+      setErrorMessage(getErrorMessage(error));
+    },
+  });
+
   const acceptInvitationMutation = useMutation({
     mutationFn: (token: string) =>
       apiRequest<WorkspaceSummary>('/workspaces/invitations/accept', {
@@ -885,6 +1167,7 @@ export default function HomePage() {
       setSelectedChannelId(null);
       setErrorMessage(null);
       void queryClient.invalidateQueries({ queryKey: workspacesQueryKey });
+      void queryClient.invalidateQueries({ queryKey: ['organizations', accessToken] });
       void queryClient.invalidateQueries({ queryKey: membersQueryKey });
       void queryClient.invalidateQueries({ queryKey: invitationsQueryKey });
     },
@@ -1076,8 +1359,32 @@ export default function HomePage() {
     },
   });
 
+  const createOrganizationWorkspaceMutation = useMutation({
+    mutationFn: (name: string) =>
+      apiRequest<WorkspaceSummary>(`/organizations/${currentOrganizationId}/workspaces`, {
+        method: 'POST',
+        accessToken,
+        body: { name },
+      }),
+    onSuccess: (workspace) => {
+      setOrganizationWorkspaceName('');
+      setSelectedWorkspaceId(workspace.id);
+      setSelectedChannelId(null);
+      setErrorMessage(null);
+      void queryClient.invalidateQueries({ queryKey: workspacesQueryKey });
+      void queryClient.invalidateQueries({ queryKey: ['organizations', accessToken] });
+      void queryClient.invalidateQueries({ queryKey: organizationWorkspacesQueryKey });
+      void queryClient.invalidateQueries({ queryKey: organizationMembersQueryKey });
+    },
+    onError: (error) => {
+      setErrorMessage(getErrorMessage(error));
+    },
+  });
+
   const currentWorkspace = workspacesQuery.data?.find((workspace) => workspace.id === selectedWorkspaceId) ?? null;
   const currentChannel = channelsQuery.data?.find((channel) => channel.id === selectedChannelId) ?? null;
+  const activeThreadRootMessage = deferredMessages.find((message) => message.id === activeThreadMessageId) ?? null;
+  const notificationPreferences = notificationPreferencesQuery.data;
   const canManageWorkspace = currentWorkspaceCanManage(currentWorkspace?.role);
   const availableChannelMemberCandidates = (membersQuery.data ?? []).filter(
     (workspaceMember) =>
@@ -1098,15 +1405,33 @@ export default function HomePage() {
     }
 
     const socket = createRealtimeSocket(accessToken);
-  socketRef.current = socket;
+    socketRef.current = socket;
 
     const invalidateRealtimeData = () => {
       void queryClient.invalidateQueries({ queryKey: ['messages', accessToken, selectedWorkspaceId, selectedChannelId] });
+      void queryClient.invalidateQueries({ queryKey: ['thread-messages', accessToken, selectedWorkspaceId, selectedChannelId, activeThreadMessageId] });
       void queryClient.invalidateQueries({ queryKey: ['channels', accessToken, selectedWorkspaceId] });
+      void queryClient.invalidateQueries({ queryKey: ['members', accessToken, selectedWorkspaceId] });
       void queryClient.invalidateQueries({ queryKey: ['notifications', accessToken, selectedWorkspaceId] });
     };
 
+    const reconcileRealtimeState = () => {
+      if (!selectedWorkspaceId) {
+        return;
+      }
+
+      void requestRealtimeSync(socket, selectedWorkspaceId, selectedChannelId ?? null).then((summary) => {
+        if (!summary || summary.workspaceId !== selectedWorkspaceId) {
+          return;
+        }
+
+        setOnlineUserIds(summary.onlineUserIds);
+      });
+    };
+
     socket.on('connect', () => {
+      invalidateRealtimeData();
+
       if (selectedWorkspaceId) {
         socket.emit('workspace:join', { workspaceId: selectedWorkspaceId });
         socket.emit('presence:heartbeat', { workspaceId: selectedWorkspaceId });
@@ -1118,11 +1443,27 @@ export default function HomePage() {
           channelId: selectedChannelId,
         });
       }
+
+      reconcileRealtimeState();
     });
 
     socket.on('message:created', invalidateRealtimeData);
     socket.on('message:updated', invalidateRealtimeData);
     socket.on('message:deleted', invalidateRealtimeData);
+    socket.on('state:reconciled', (summary: RealtimeSyncSummary) => {
+      if (!selectedWorkspaceId || summary.workspaceId !== selectedWorkspaceId) {
+        return;
+      }
+
+      setOnlineUserIds(summary.onlineUserIds);
+    });
+    socket.on('notification:new', (payload: { userId: string }) => {
+      if (payload.userId !== meQuery.data?.id) {
+        return;
+      }
+
+      void queryClient.invalidateQueries({ queryKey: ['notifications', accessToken, selectedWorkspaceId] });
+    });
     socket.on(
       'typing:update',
       (payload: { channelId: string; userId: string; displayName: string; isTyping: boolean }) => {
@@ -1182,7 +1523,7 @@ export default function HomePage() {
       socketRef.current = null;
       socket.disconnect();
     };
-  }, [accessToken, meQuery.data?.id, queryClient, selectedChannelId, selectedWorkspaceId]);
+  }, [accessToken, activeThreadMessageId, meQuery.data?.id, queryClient, selectedChannelId, selectedWorkspaceId]);
 
   useEffect(() => {
     if (!messageDraft.trim() || !accessToken || !selectedWorkspaceId || !selectedChannelId) {
@@ -1338,6 +1679,17 @@ export default function HomePage() {
     } finally {
       setIsUploadingAttachments(false);
     }
+  }
+
+  function toggleReaction(message: MessageSummary, emoji: string) {
+    const existingReaction = message.reactions.find((reaction) => reaction.emoji === emoji);
+
+    if (existingReaction?.reactedByCurrentUser) {
+      removeReactionMutation.mutate({ messageId: message.id, emoji });
+      return;
+    }
+
+    addReactionMutation.mutate({ messageId: message.id, emoji });
   }
 
   return (
@@ -1530,6 +1882,39 @@ export default function HomePage() {
             </p>
           </div>
           <div className="conversation-header-actions">
+            <div className="search-controls">
+              <input
+                className="search-input"
+                data-testid="workspace-search-input"
+                placeholder={selectedWorkspaceId ? 'Search messages, channels, files, members' : 'Select a workspace to search'}
+                value={searchQuery}
+                onChange={(event) => setSearchQuery(event.target.value)}
+                disabled={!selectedWorkspaceId}
+              />
+              <select
+                className="search-scope-select"
+                data-testid="workspace-search-scope"
+                value={searchScope}
+                onChange={(event) => setSearchScope(event.target.value as WorkspaceSearchScope)}
+                disabled={!selectedWorkspaceId}
+              >
+                <option value="ALL">all</option>
+                <option value="CHANNELS">channels</option>
+                <option value="MESSAGES">messages</option>
+                <option value="FILES">files</option>
+                <option value="MEMBERS">members</option>
+              </select>
+              <label className="checkbox-row compact-checkbox">
+                <input
+                  checked={searchOnlyCurrentChannel}
+                  data-testid="workspace-search-current-channel"
+                  type="checkbox"
+                  onChange={(event) => setSearchOnlyCurrentChannel(event.target.checked)}
+                  disabled={!selectedWorkspaceId || !selectedChannelId}
+                />
+                <span>Current channel</span>
+              </label>
+            </div>
             <button
               className="ghost-button workspace-settings-trigger"
               data-testid="workspace-settings-trigger"
@@ -1551,6 +1936,115 @@ export default function HomePage() {
         </header>
 
         {errorMessage ? <p className="error-banner inline">{errorMessage}</p> : null}
+
+        {deferredSearchQuery.length >= 2 ? (
+          <section className="search-panel info-card">
+            <div className="section-header">
+              <h3>Search results</h3>
+              <span>
+                {searchResultsQuery.isFetching
+                  ? 'Searching…'
+                  : `${searchResultsQuery.data?.totalCount ?? 0} hits · ${searchScope.toLowerCase()}`}
+              </span>
+            </div>
+
+            {searchChannelId && currentChannel ? (
+              <p className="muted-copy">Filtered to #{currentChannel.name}.</p>
+            ) : null}
+
+            {searchResultsQuery.data ? (
+              <div className="search-grid">
+                <div>
+                  <h4>Channels</h4>
+                  <div className="search-result-list">
+                    {searchResultsQuery.data.channels.length ? (
+                      searchResultsQuery.data.channels.map((channel) => (
+                        <button
+                          className="search-result-item"
+                          key={channel.id}
+                          type="button"
+                          onClick={() => {
+                            setSelectedChannelId(channel.id);
+                            setSearchQuery('');
+                          }}
+                        >
+                          <strong>{renderHighlightedText(`#${channel.name}`, searchResultsQuery.data.query)}</strong>
+                          <span>
+                            {channel.description
+                              ? renderHighlightedText(channel.description, searchResultsQuery.data.query)
+                              : channel.type.toLowerCase()}
+                          </span>
+                        </button>
+                      ))
+                    ) : (
+                      <p className="muted-copy">No matching channels.</p>
+                    )}
+                  </div>
+                </div>
+
+                <div>
+                  <h4>Messages</h4>
+                  <div className="search-result-list">
+                    {searchResultsQuery.data.messages.length ? (
+                      searchResultsQuery.data.messages.map((message) => (
+                        <button
+                          className="search-result-item"
+                          key={message.id}
+                          type="button"
+                          onClick={() => {
+                            setSelectedChannelId(message.channelId);
+                            setSearchQuery('');
+                          }}
+                        >
+                          <strong>#{message.channelName}</strong>
+                          <span>
+                            {renderHighlightedText(`${message.senderDisplayName}: ${message.preview}`, searchResultsQuery.data.query)}
+                          </span>
+                        </button>
+                      ))
+                    ) : (
+                      <p className="muted-copy">No matching messages.</p>
+                    )}
+                  </div>
+                </div>
+
+                <div>
+                  <h4>Files</h4>
+                  <div className="search-result-list">
+                    {searchResultsQuery.data.files.length ? (
+                      searchResultsQuery.data.files.map((file) => (
+                        <a className="search-result-item" href={resolveApiUrl(file.url)} key={file.id} rel="noreferrer" target="_blank">
+                          <strong>{renderHighlightedText(file.originalName, searchResultsQuery.data.query)}</strong>
+                          <span>{renderHighlightedText(file.preview, searchResultsQuery.data.query)}</span>
+                        </a>
+                      ))
+                    ) : (
+                      <p className="muted-copy">No matching files.</p>
+                    )}
+                  </div>
+                </div>
+
+                <div>
+                  <h4>Members</h4>
+                  <div className="search-result-list">
+                    {searchResultsQuery.data.members.length ? (
+                      searchResultsQuery.data.members.map((member) => (
+                        <div className="search-result-item static" key={member.userId}>
+                          <strong>{renderHighlightedText(member.displayName, searchResultsQuery.data.query)}</strong>
+                          <span>{renderHighlightedText(member.email, searchResultsQuery.data.query)} · {member.role.toLowerCase()}</span>
+                        </div>
+                      ))
+                    ) : (
+                      <p className="muted-copy">No matching members.</p>
+                    )}
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <p className="muted-copy">Start typing to search within this workspace.</p>
+            )}
+          </section>
+        ) : null}
 
         <div className="message-stream">
           {messagesQuery.hasNextPage ? (
@@ -1623,8 +2117,52 @@ export default function HomePage() {
                         ))}
                       </div>
                     ) : null}
-                    {message.isOwnMessage && !message.isDeleted ? (
-                      <div className="message-toolbar">
+                    {message.reactions.length > 0 ? (
+                      <div className="reaction-list">
+                        {message.reactions.map((reaction) => (
+                          <button
+                            className={reaction.reactedByCurrentUser ? 'reaction-chip active' : 'reaction-chip'}
+                            key={reaction.emoji}
+                            type="button"
+                            onClick={() => toggleReaction(message, reaction.emoji)}
+                          >
+                            <span>{reaction.emoji}</span>
+                            <small>{reaction.count}</small>
+                          </button>
+                        ))}
+                      </div>
+                    ) : null}
+
+                    <div className="message-supporting-meta">
+                      <span>
+                        {message.threadReplyCount > 0
+                          ? `${message.threadReplyCount} ${message.threadReplyCount === 1 ? 'reply' : 'replies'}`
+                          : 'No replies yet'}
+                      </span>
+                      {message.readReceipts.length > 0 ? (
+                        <span>{formatReadReceiptSummary(message.readReceipts)}</span>
+                      ) : null}
+                    </div>
+
+                    {!message.isDeleted ? (
+                      <div className="message-toolbar extended">
+                        <button
+                          className={activeThreadMessageId === message.id ? 'ghost-button active-chip' : 'ghost-button'}
+                          type="button"
+                          onClick={() => setActiveThreadMessageId((current) => (current === message.id ? null : message.id))}
+                        >
+                          Thread
+                        </button>
+                        {['👍', '❤️', '👀'].map((emoji) => (
+                          <button
+                            className="ghost-button emoji-button"
+                            key={emoji}
+                            type="button"
+                            onClick={() => toggleReaction(message, emoji)}
+                          >
+                            {emoji}
+                          </button>
+                        ))}
                         <button
                           className="ghost-button"
                           type="button"
@@ -1632,6 +2170,7 @@ export default function HomePage() {
                             setEditingMessageId(message.id);
                             setEditingMessageDraft(message.content);
                           }}
+                          hidden={!message.isOwnMessage}
                         >
                           Edit
                         </button>
@@ -1639,6 +2178,7 @@ export default function HomePage() {
                           className="ghost-button danger-button"
                           type="button"
                           onClick={() => deleteMessageMutation.mutate(message.id)}
+                          hidden={!message.isOwnMessage}
                         >
                           Delete
                         </button>
@@ -1655,6 +2195,84 @@ export default function HomePage() {
             </div>
           )}
         </div>
+
+        {activeThreadRootMessage ? (
+          <section className="thread-panel info-card">
+            <div className="section-header">
+              <h3>Thread</h3>
+              <span>{activeThreadRootMessage.sender.displayName}</span>
+            </div>
+
+            <div className="thread-root-card">
+              <strong>{activeThreadRootMessage.sender.displayName}</strong>
+              <p>{activeThreadRootMessage.content}</p>
+            </div>
+
+            <div className="thread-message-list">
+              {threadMessagesQuery.data?.length ? (
+                threadMessagesQuery.data.map((message) => (
+                  <article className="thread-message" key={message.id}>
+                    <div className="message-meta">
+                      <strong>{message.sender.displayName}</strong>
+                      <span>{formatTime(message.createdAt)}</span>
+                    </div>
+                    <p>{message.content}</p>
+                    {message.reactions.length > 0 ? (
+                      <div className="reaction-list compact">
+                        {message.reactions.map((reaction) => (
+                          <button
+                            className={reaction.reactedByCurrentUser ? 'reaction-chip active' : 'reaction-chip'}
+                            key={reaction.emoji}
+                            type="button"
+                            onClick={() => toggleReaction(message, reaction.emoji)}
+                          >
+                            <span>{reaction.emoji}</span>
+                            <small>{reaction.count}</small>
+                          </button>
+                        ))}
+                      </div>
+                    ) : null}
+                  </article>
+                ))
+              ) : (
+                <p className="muted-copy">No replies yet. Start the thread.</p>
+              )}
+            </div>
+
+            <form
+              className="compact-form stacked"
+              onSubmit={(event) => {
+                event.preventDefault();
+
+                if (!activeThreadMessageId) {
+                  return;
+                }
+
+                sendThreadReplyMutation.mutate({
+                  content: threadDraft,
+                  parentMessageId: activeThreadMessageId,
+                });
+              }}
+            >
+              <textarea
+                data-testid="thread-reply-input"
+                placeholder="Reply in thread"
+                value={threadDraft}
+                onChange={(event) => setThreadDraft(event.target.value)}
+                minLength={1}
+                required
+              />
+              <div className="thread-actions">
+                <button className="primary-button" type="submit" disabled={sendThreadReplyMutation.isPending || !threadDraft.trim()}>
+                  Reply
+                </button>
+                <button className="ghost-button" type="button" onClick={() => setActiveThreadMessageId(null)}>
+                  Close thread
+                </button>
+              </div>
+            </form>
+          </section>
+        ) : null}
 
         <form
           className="composer"
@@ -1840,6 +2458,129 @@ export default function HomePage() {
                     Mark all read
                   </button>
 
+                  {notificationPreferences ? (
+                    <div className="notification-preferences">
+                      <label className="checkbox-row">
+                        <input
+                          checked={notificationPreferences.muteAll}
+                          type="checkbox"
+                          onChange={(event) =>
+                            updateNotificationPreferencesMutation.mutate({ muteAll: event.target.checked })
+                          }
+                        />
+                        <span>Mute all notifications in this workspace</span>
+                      </label>
+                      <label className="checkbox-row">
+                        <input
+                          checked={notificationPreferences.allowMentions}
+                          type="checkbox"
+                          onChange={(event) =>
+                            updateNotificationPreferencesMutation.mutate({ allowMentions: event.target.checked })
+                          }
+                        />
+                        <span>Allow mention notifications</span>
+                      </label>
+                      <label className="checkbox-row">
+                        <input
+                          checked={notificationPreferences.emailMentions}
+                          type="checkbox"
+                          onChange={(event) =>
+                            updateNotificationPreferencesMutation.mutate({ emailMentions: event.target.checked })
+                          }
+                        />
+                        <span>Email mention notifications</span>
+                      </label>
+                      <label className="checkbox-row">
+                        <input
+                          checked={notificationPreferences.emailDigest}
+                          type="checkbox"
+                          onChange={(event) =>
+                            updateNotificationPreferencesMutation.mutate({ emailDigest: event.target.checked })
+                          }
+                        />
+                        <span>Email daily digests</span>
+                      </label>
+                      <label className="checkbox-row">
+                        <input
+                          checked={notificationPreferences.pushMentions}
+                          type="checkbox"
+                          onChange={(event) =>
+                            updateNotificationPreferencesMutation.mutate({ pushMentions: event.target.checked })
+                          }
+                        />
+                        <span>Push mention notifications</span>
+                      </label>
+                      <label className="checkbox-row">
+                        <input
+                          checked={notificationPreferences.pushDigest}
+                          type="checkbox"
+                          onChange={(event) =>
+                            updateNotificationPreferencesMutation.mutate({ pushDigest: event.target.checked })
+                          }
+                        />
+                        <span>Push daily digests</span>
+                      </label>
+                      <label className="field compact-field">
+                        <span>Digest</span>
+                        <select
+                          value={notificationPreferences.digestMode}
+                          onChange={(event) =>
+                            updateNotificationPreferencesMutation.mutate({
+                              digestMode: event.target.value as NotificationPreferenceSummary['digestMode'],
+                            })
+                          }
+                        >
+                          <option value="OFF">off</option>
+                          <option value="DAILY">daily</option>
+                        </select>
+                      </label>
+
+                      <div className="digest-actions">
+                        <p className="muted-copy">
+                          {notificationPreferences.lastDigestAt
+                            ? `Last digest ${formatTime(notificationPreferences.lastDigestAt)}`
+                            : 'No digest generated yet.'}
+                        </p>
+                        <button
+                          className="ghost-button"
+                          data-testid="run-digest-button"
+                          type="button"
+                          onClick={() => runDigestMutation.mutate()}
+                          disabled={notificationPreferences.digestMode !== 'DAILY' || runDigestMutation.isPending}
+                        >
+                          Run digest now
+                        </button>
+                      </div>
+
+                      <p className="muted-copy">Email and push delivery both use local outboxes by default and can switch to external transports through API environment settings.</p>
+
+                      {channelsQuery.data?.length ? (
+                        <div className="muted-channel-list">
+                          {channelsQuery.data.map((channel) => {
+                            const muted = notificationPreferences.mutedChannelIds.includes(channel.id);
+
+                            return (
+                              <label className="checkbox-row" key={channel.id}>
+                                <input
+                                  checked={muted}
+                                  type="checkbox"
+                                  onChange={(event) => {
+                                    const nextMutedChannelIds = event.target.checked
+                                      ? [...notificationPreferences.mutedChannelIds, channel.id]
+                                      : notificationPreferences.mutedChannelIds.filter((candidate) => candidate !== channel.id);
+
+                                    updateNotificationPreferencesMutation.mutate({ mutedChannelIds: nextMutedChannelIds });
+                                  }}
+                                />
+                                <span>Mute #{channel.name}</span>
+                              </label>
+                            );
+                          })}
+                        </div>
+                      ) : null}
+                    </div>
+                  ) : null}
+
                   <div className="notification-list">
                     {notificationsQuery.data?.length ? (
                       notificationsQuery.data.slice(0, 6).map((notification) => (
@@ -1849,7 +2590,9 @@ export default function HomePage() {
                           data-testid={notification.readAt ? 'notification-card-read' : 'notification-card-unread'}
                           className={notification.readAt ? 'notification-card group' : 'notification-card group unread'}
                           onClick={() => {
-                            setSelectedChannelId(notification.channelId);
+                            if (notification.channelId) {
+                              setSelectedChannelId(notification.channelId);
+                            }
                             markNotificationReadMutation.mutate(notification.id);
                             setIsWorkspaceSettingsOpen(false);
                           }}
@@ -1993,6 +2736,220 @@ export default function HomePage() {
                     )}
                   </div>
                 </article>
+
+                {currentWorkspaceCanManage(currentWorkspaceRole) ? (
+                  <article className="info-card organization-card" data-testid="organization-admin-card">
+                    <div className="section-header">
+                      <h3>Organization</h3>
+                      <span>{currentOrganization?.workspaceCount ?? 0}</span>
+                    </div>
+
+                    {currentOrganization ? (
+                      <>
+                        <div className="organization-summary">
+                          <strong>{currentOrganization.name}</strong>
+                          <span>
+                            {currentOrganization.memberCount} members · {currentOrganization.workspaceCount} workspaces · {currentOrganization.role.toLowerCase()} access
+                          </span>
+                        </div>
+
+                        <form
+                          className="compact-form stacked"
+                          onSubmit={(event) => {
+                            event.preventDefault();
+                            createOrganizationWorkspaceMutation.mutate(organizationWorkspaceName);
+                          }}
+                        >
+                          <input
+                            data-testid="organization-workspace-input"
+                            placeholder="Create workspace inside this organization"
+                            value={organizationWorkspaceName}
+                            onChange={(event) => setOrganizationWorkspaceName(event.target.value)}
+                            minLength={2}
+                            maxLength={50}
+                            required
+                          />
+                          <button
+                            className="primary-button"
+                            data-testid="organization-workspace-button"
+                            type="submit"
+                            disabled={!organizationWorkspaceName.trim() || createOrganizationWorkspaceMutation.isPending}
+                          >
+                            Add organization workspace
+                          </button>
+                        </form>
+
+                        <div className="organization-workspace-list">
+                          {organizationWorkspacesQuery.data?.length ? (
+                            organizationWorkspacesQuery.data.map((workspace) => (
+                              <button
+                                className={workspace.id === selectedWorkspaceId ? 'organization-workspace-row active' : 'organization-workspace-row'}
+                                data-testid="organization-workspace-row"
+                                key={workspace.id}
+                                type="button"
+                                onClick={() => setSelectedWorkspaceId(workspace.id)}
+                              >
+                                <strong>{workspace.name}</strong>
+                                <span>
+                                  {workspace.memberCount} members · {workspace.currentUserRole?.toLowerCase() ?? 'no workspace access'}
+                                </span>
+                              </button>
+                            ))
+                          ) : (
+                            <p className="muted-copy">No workspaces in this organization yet.</p>
+                          )}
+                        </div>
+
+                        <div className="organization-member-list">
+                          {organizationMembersQuery.data?.length ? (
+                            organizationMembersQuery.data.map((member) => (
+                              <div className="member-row organization-member-row" key={member.userId}>
+                                <div>
+                                  <strong>{member.displayName}</strong>
+                                  <span>
+                                    {member.email}
+                                    {member.isCurrentUser ? ' · you' : ''}
+                                    {' · '}
+                                    {member.role.toLowerCase()}
+                                  </span>
+                                  <small>{member.workspaceAccess.map((workspaceAccess) => `${workspaceAccess.workspaceName} (${workspaceAccess.role.toLowerCase()})`).join(' · ')}</small>
+                                </div>
+                              </div>
+                            ))
+                          ) : (
+                            <p className="muted-copy">
+                              {organizationMembersQuery.isFetching
+                                ? 'Loading organization members…'
+                                : 'No organization member overview available yet.'}
+                            </p>
+                          )}
+                        </div>
+                      </>
+                    ) : (
+                      <p className="muted-copy">This workspace is still resolving its organization context.</p>
+                    )}
+                  </article>
+                ) : null}
+
+                {currentWorkspaceCanManage(currentWorkspaceRole) ? (
+                  <article className="info-card analytics-card" data-testid="workspace-analytics-card">
+                    <div className="section-header">
+                      <h3>Analytics</h3>
+                      <span>{analyticsQuery.data?.activity.messages30d ?? 0}</span>
+                    </div>
+
+                    {analyticsQuery.data ? (
+                      <>
+                        <div className="analytics-kpis">
+                          <div className="analytics-kpi">
+                            <strong>{analyticsQuery.data.activity.activeMembers7d}</strong>
+                            <span>active members · 7d</span>
+                          </div>
+                          <div className="analytics-kpi">
+                            <strong>{analyticsQuery.data.activity.messages30d}</strong>
+                            <span>messages · 30d</span>
+                          </div>
+                          <div className="analytics-kpi">
+                            <strong>{analyticsQuery.data.retention.engagedMemberRate30d}%</strong>
+                            <span>engaged retention · 30d</span>
+                          </div>
+                          <div className="analytics-kpi">
+                            <strong>{analyticsQuery.data.adminActivity.memberChanges30d}</strong>
+                            <span>member admin actions · 30d</span>
+                          </div>
+                        </div>
+
+                        <div className="analytics-inline-summary">
+                          <span>{analyticsQuery.data.retention.newMembers30d} new members in the last 30 days</span>
+                          <span>{analyticsQuery.data.activity.files30d} files shared</span>
+                          <span>{analyticsQuery.data.activity.auditEvents30d} audit events</span>
+                        </div>
+
+                        <div className="analytics-volume">
+                          {analyticsQuery.data.messageVolume.map((point) => {
+                            const maxCount = Math.max(...analyticsQuery.data.messageVolume.map((entry) => entry.count), 1);
+                            const height = `${Math.max((point.count / maxCount) * 100, point.count > 0 ? 18 : 6)}%`;
+
+                            return (
+                              <div className="analytics-volume-column" key={point.date} title={`${point.date}: ${point.count} messages`}>
+                                <small>{point.count}</small>
+                                <div className="analytics-volume-bar-wrap">
+                                  <span className="analytics-volume-bar" style={{ height }} />
+                                </div>
+                                <span>{formatCompactDate(point.date)}</span>
+                              </div>
+                            );
+                          })}
+                        </div>
+
+                        <div className="analytics-channel-list">
+                          {analyticsQuery.data.topChannels.length ? (
+                            analyticsQuery.data.topChannels.map((channel) => (
+                              <div className="analytics-channel-row" key={channel.channelId}>
+                                <strong>#{channel.channelName}</strong>
+                                <span>{channel.messageCount} messages · 30d</span>
+                              </div>
+                            ))
+                          ) : (
+                            <p className="muted-copy">No channel activity yet.</p>
+                          )}
+                        </div>
+                      </>
+                    ) : (
+                      <p className="muted-copy">
+                        {analyticsQuery.isFetching ? 'Loading analytics…' : 'No analytics snapshot available yet.'}
+                      </p>
+                    )}
+                  </article>
+                ) : null}
+
+                {currentWorkspaceCanManage(currentWorkspaceRole) ? (
+                  <article className="info-card">
+                    <div className="section-header">
+                      <h3>Audit trail</h3>
+                      <span>{auditLogsQuery.data?.length ?? 0}</span>
+                    </div>
+
+                    <div className="audit-toolbar">
+                      <label className="field compact-field">
+                        <span>Filter</span>
+                        <select
+                          data-testid="audit-action-filter"
+                          value={auditActionFilter}
+                          onChange={(event) => setAuditActionFilter(event.target.value as typeof auditActionFilter)}
+                        >
+                          <option value="ALL">all actions</option>
+                          <option value="WORKSPACE_CREATED">workspace created</option>
+                          <option value="WORKSPACE_UPDATED">workspace updated</option>
+                          <option value="INVITATION_CREATED">invitation created</option>
+                          <option value="INVITATION_REVOKED">invitation revoked</option>
+                          <option value="INVITATION_ACCEPTED">invitation accepted</option>
+                          <option value="MEMBER_ROLE_UPDATED">member role updated</option>
+                          <option value="MEMBER_REMOVED">member removed</option>
+                          <option value="CHANNEL_CREATED">channel created</option>
+                          <option value="CHANNEL_UPDATED">channel updated</option>
+                          <option value="CHANNEL_DELETED">channel deleted</option>
+                          <option value="CHANNEL_MEMBER_ADDED">channel member added</option>
+                          <option value="CHANNEL_MEMBER_REMOVED">channel member removed</option>
+                        </select>
+                      </label>
+                    </div>
+
+                    <div className="audit-list" data-testid="audit-log-list">
+                      {auditLogsQuery.data?.length ? (
+                        auditLogsQuery.data.map((log) => (
+                          <article className="audit-log-item" data-testid="audit-log-item" key={log.id}>
+                            <strong>{formatAuditLogTitle(log)}</strong>
+                            <span>{formatAuditLogDetail(log)}</span>
+                            <small>{formatTime(log.createdAt)}</small>
+                          </article>
+                        ))
+                      ) : (
+                        <p className="muted-copy">No audit events yet.</p>
+                      )}
+                    </div>
+                  </article>
+                ) : null}
               </section>
             </aside>
           </>
@@ -2063,6 +3020,32 @@ function formatTime(value: string) {
   }).format(new Date(value));
 }
 
+function formatCompactDate(value: string) {
+  return new Intl.DateTimeFormat('en', {
+    month: 'short',
+    day: 'numeric',
+  }).format(new Date(value));
+}
+
+function formatReadReceiptSummary(
+  readReceipts: Array<{
+    displayName: string;
+    readAt: string;
+  }>,
+) {
+  if (readReceipts.length === 0) {
+    return 'Unread';
+  }
+
+  const visibleNames = readReceipts.slice(0, 3).map((receipt) => receipt.displayName);
+
+  if (readReceipts.length <= 3) {
+    return `Read by ${visibleNames.join(', ')}`;
+  }
+
+  return `Read by ${visibleNames.join(', ')} +${readReceipts.length - 3}`;
+}
+
 function ThemeToggleButton({
   theme,
   onToggle,
@@ -2087,6 +3070,71 @@ function ThemeToggleButton({
   );
 }
 
+
+  function renderHighlightedText(value: string, query: string): ReactNode {
+    const terms = Array.from(new Set(query.toLowerCase().split(/\s+/).filter(Boolean)));
+
+    if (terms.length === 0) {
+      return value;
+    }
+
+    const pattern = new RegExp(`(${terms.map(escapeRegExp).join('|')})`, 'gi');
+    const parts = value.split(pattern);
+
+    return parts.map((part, index) =>
+      terms.includes(part.toLowerCase()) ? <mark key={`${part}-${index}`}>{part}</mark> : part,
+    );
+  }
+
+  function formatAuditLogTitle(log: AuditLogSummary) {
+    const actor = log.actorDisplayName;
+    const subject = log.entityLabel ? ` ${log.entityLabel}` : '';
+
+    switch (log.action) {
+      case 'WORKSPACE_CREATED':
+        return `${actor} created workspace${subject}`;
+      case 'WORKSPACE_UPDATED':
+        return `${actor} updated workspace${subject}`;
+      case 'INVITATION_CREATED':
+        return `${actor} invited ${log.metadata.email ?? log.entityLabel ?? 'a member'}`;
+      case 'INVITATION_REVOKED':
+        return `${actor} revoked invite for ${log.metadata.email ?? log.entityLabel ?? 'a member'}`;
+      case 'INVITATION_ACCEPTED':
+        return `${actor} accepted an invitation`;
+      case 'MEMBER_ROLE_UPDATED':
+        return `${actor} changed ${log.targetDisplayName ?? 'a member'} to ${(log.metadata.nextRole ?? 'member').toString().toLowerCase()}`;
+      case 'MEMBER_REMOVED':
+        return `${actor} removed ${log.targetDisplayName ?? 'a member'}`;
+      case 'CHANNEL_CREATED':
+        return `${actor} created channel #${log.entityLabel ?? 'channel'}`;
+      case 'CHANNEL_UPDATED':
+        return `${actor} updated channel #${log.entityLabel ?? 'channel'}`;
+      case 'CHANNEL_DELETED':
+        return `${actor} deleted channel #${log.entityLabel ?? 'channel'}`;
+      case 'CHANNEL_MEMBER_ADDED':
+        return `${actor} added ${log.targetDisplayName ?? 'a member'} to #${log.entityLabel ?? 'channel'}`;
+      case 'CHANNEL_MEMBER_REMOVED':
+        return `${actor} removed ${log.targetDisplayName ?? 'a member'} from #${log.entityLabel ?? 'channel'}`;
+      default:
+        return `${actor} performed ${String(log.action).toLowerCase()}`;
+    }
+  }
+
+  function formatAuditLogDetail(log: AuditLogSummary) {
+    const metadataEntries = Object.entries(log.metadata)
+      .filter(([, value]) => value !== null && value !== '')
+      .map(([key, value]) => `${key}: ${String(value).toLowerCase()}`);
+
+    if (metadataEntries.length === 0) {
+      return log.entityType.toLowerCase();
+    }
+
+    return metadataEntries.join(' · ');
+  }
+
+  function escapeRegExp(value: string) {
+    return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  }
 function SunIcon() {
   return (
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">

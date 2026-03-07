@@ -30,6 +30,28 @@ test.describe('WorkNext web flows', () => {
     await page.getByTestId('composer-input').fill(messageBody);
     await page.getByTestId('send-message-button').click();
     await expect(page.getByTestId('message-card').last()).toContainText(messageBody);
+
+    await page.getByRole('button', { name: 'Thread' }).last().click();
+    await page.getByTestId('thread-reply-input').fill(`Reply to ${messageBody}`);
+    await page.getByRole('button', { name: 'Reply' }).click({ force: true });
+    await expect(page.getByText(`Reply to ${messageBody}`)).toBeVisible();
+
+    await page.getByRole('button', { name: '👍' }).last().click();
+    await expect(page.getByText('👍')).toBeVisible();
+    await expect(page.getByText(/Read by/i).last()).toBeVisible();
+
+    await page.getByTestId('workspace-search-scope').selectOption('CHANNELS');
+    await page.getByTestId('workspace-search-input').fill(channelName);
+    await expect(page.locator('.search-panel').getByText(`#${channelName}`)).toBeVisible();
+
+    await openWorkspaceSettings(page);
+    await expect(page.getByTestId('organization-admin-card')).toBeVisible();
+    await expect(page.getByTestId('workspace-analytics-card')).toBeVisible();
+    await expect(page.getByTestId('workspace-analytics-card')).toContainText('Analytics');
+    await expect(page.getByTestId('audit-log-list')).toBeVisible();
+    await expect(page.getByTestId('audit-log-item').first()).toContainText('created workspace');
+    const muteAllCheckbox = page.getByLabel('Mute all notifications in this workspace');
+    await muteAllCheckbox.click({ force: true });
   });
 
   test('accepts an invitation and reads a mention notification', async ({ browser }) => {
@@ -65,13 +87,27 @@ test.describe('WorkNext web flows', () => {
     await openWorkspaceSettings(ownerPage);
     await expect(ownerPage.getByTestId('invite-email-input')).toBeVisible();
     await ownerPage.getByTestId('invite-email-input').fill(memberEmail);
-    await ownerPage.getByTestId('create-invite-button').click();
+    await ownerPage.getByTestId('create-invite-button').evaluate((button: HTMLButtonElement) => {
+      button.form?.requestSubmit();
+    });
 
-    const invitationToken = await ownerPage.getByTestId('invitation-token').first().textContent();
+    let invitationToken = '';
+    await expect
+      .poll(async () => {
+        invitationToken = (await ownerPage.getByTestId('invitation-token').first().textContent())?.trim() ?? '';
+        return invitationToken;
+      })
+      .not.toMatch(/^pending-/);
     expect(invitationToken).toBeTruthy();
 
     await memberPage.getByTestId('accept-invitation-input').fill(invitationToken ?? '');
+    const acceptInvitationResponse = memberPage.waitForResponse(
+      (response) =>
+        response.request().method() === 'POST' && response.url().includes('/api/workspaces/invitations/accept'),
+    );
     await memberPage.getByTestId('accept-invitation-button').click();
+    await expect(async () => expect((await acceptInvitationResponse).ok()).toBeTruthy()).toPass();
+    await selectWorkspace(memberPage, workspaceName);
     await memberPage.reload();
     await expect(workspaceHeading(memberPage, workspaceName)).toBeVisible();
 
@@ -88,7 +124,10 @@ test.describe('WorkNext web flows', () => {
     await openWorkspaceSettings(ownerPage);
     await expect(ownerPage.getByTestId('channel-member-select')).toBeVisible();
     await ownerPage.getByTestId('channel-member-select').selectOption({ label: `${memberDisplayName} (${memberEmail})` });
-    await ownerPage.getByTestId('add-channel-member-button').click();
+    await ownerPage.getByTestId('add-channel-member-button').evaluate((button: HTMLButtonElement) => {
+      button.form?.requestSubmit();
+    });
+    await expect(ownerPage.locator('.member-list').getByText(memberEmail).first()).toBeVisible();
 
     await ownerPage.keyboard.press('Escape');
     await ownerPage.getByTestId('composer-input').fill(`Hello @${memberAlias}`);
@@ -96,8 +135,17 @@ test.describe('WorkNext web flows', () => {
 
     await memberPage.reload();
     await expect(workspaceHeading(memberPage, workspaceName)).toBeVisible();
-    await memberPage.getByTestId('channel-item').filter({ hasText: `#${channelName}` }).click();
+    const memberChannelItem = memberPage.getByTestId('channel-item').filter({ hasText: `#${channelName}` });
+    await expect(memberChannelItem).toBeVisible();
+    await memberChannelItem.click({ force: true });
     await openWorkspaceSettings(memberPage);
+    await memberPage.getByLabel('Email mention notifications').click({ force: true });
+    await memberPage.getByLabel('Email daily digests').click({ force: true });
+    await memberPage.getByLabel('Push mention notifications').click({ force: true });
+    await memberPage.getByLabel('Push daily digests').click({ force: true });
+    await memberPage.locator('.notification-preferences select').selectOption('DAILY');
+    await memberPage.getByTestId('run-digest-button').click();
+    await expect(memberPage.locator('.notification-card').filter({ hasText: /Daily digest/i }).first()).toBeVisible();
     await expect(memberPage.getByTestId('notification-card-unread').first()).toContainText('mentioned you');
 
     await memberPage.getByTestId('notification-card-unread').first().click({ force: true });
