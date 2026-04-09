@@ -825,5 +825,5 @@ What Gemini should not change unless backend changes too:
 
 ## 9. Current Test Accounts
 
-- `tester@worknext.local` / `Worknext123!`
-- `collab.member@worknext.local` / `Worknext123!`
+- `tester-1775769298@worknext.local` / `Worknext123!`
+- `member-1775769298@worknext.local` / `Worknext123!`

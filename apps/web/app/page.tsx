@@ -42,6 +42,7 @@ import {
   registerRequest,
   resolveApiUrl,
 } from '../lib/api';
+import { usePathname, useRouter } from 'next/navigation';
 import { useAppStore } from '../lib/app-store';
 import { createRealtimeSocket, type RealtimeSocket } from '../lib/realtime';
 
@@ -81,6 +82,13 @@ function requestRealtimeSync(
 }
 
 export default function HomePage() {
+  const COMPOSER_MIN_HEIGHT_PX = 32;
+  const COMPOSER_MAX_HEIGHT_PX = 240;
+
+  const router = useRouter();
+  const pathname = usePathname();
+  const isWorksettingsRoute = pathname === '/worksettings';
+
   const queryClient = useQueryClient();
   const accessToken = useAppStore((state) => state.accessToken);
   const setAccessToken = useAppStore((state) => state.setAccessToken);
@@ -92,7 +100,11 @@ export default function HomePage() {
 
   const [authMode, setAuthMode] = useState<AuthMode>('register');
   const [theme, setTheme] = useState<ThemeMode>('dark');
+  const [isThemeReady, setIsThemeReady] = useState(false);
+  const [isLeftRailOpen, setIsLeftRailOpen] = useState(false);
+  const [isTopNavOpen, setIsTopNavOpen] = useState(false);
   const [isWorkspaceSettingsOpen, setIsWorkspaceSettingsOpen] = useState(false);
+  const [workspaceSettingsTab, setWorkspaceSettingsTab] = useState<'manage' | 'analytics'>('manage');
   const [refreshAttempted, setRefreshAttempted] = useState(false);
   const [authForm, setAuthForm] = useState({
     email: '',
@@ -106,6 +118,7 @@ export default function HomePage() {
     type: 'PUBLIC' as 'PUBLIC' | 'PRIVATE',
   });
   const [messageDraft, setMessageDraft] = useState('');
+  const [composerInputHeight, setComposerInputHeight] = useState(COMPOSER_MIN_HEIGHT_PX);
   const [threadDraft, setThreadDraft] = useState('');
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [editingMessageDraft, setEditingMessageDraft] = useState('');
@@ -118,18 +131,29 @@ export default function HomePage() {
   const [acceptInviteToken, setAcceptInviteToken] = useState('');
   const [channelMemberUserId, setChannelMemberUserId] = useState('');
   const [organizationWorkspaceName, setOrganizationWorkspaceName] = useState('');
+  const [profileDisplayName, setProfileDisplayName] = useState('');
   const [pendingAttachments, setPendingAttachments] = useState<FileAttachmentSummary[]>([]);
   const [isUploadingAttachments, setIsUploadingAttachments] = useState(false);
   const [typingUsers, setTypingUsers] = useState<string[]>([]);
   const [onlineUserIds, setOnlineUserIds] = useState<string[]>([]);
+  const [mutedMemberIds, setMutedMemberIds] = useState<string[]>([]);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const typingTimeoutsRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+  const composerResizeRef = useRef<{
+    startY: number;
+    startHeight: number;
+    pointerId: number;
+  } | null>(null);
+  const composerInputRef = useRef<HTMLTextAreaElement | null>(null);
   const socketRef = useRef<RealtimeSocket | null>(null);
+  const topNavTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const topNavDrawerRef = useRef<HTMLElement | null>(null);
   useEffect(() => {
     const storedTheme = window.localStorage.getItem('worknext-theme');
 
     if (storedTheme === 'dark' || storedTheme === 'light') {
       setTheme(storedTheme);
+      setIsThemeReady(true);
       return;
     }
 
@@ -137,18 +161,64 @@ export default function HomePage() {
       ? 'light'
       : 'dark';
     setTheme(preferredTheme);
+    setIsThemeReady(true);
   }, []);
 
   useEffect(() => {
+    if (!isThemeReady) {
+      return;
+    }
+
     document.documentElement.dataset.theme = theme;
     window.localStorage.setItem('worknext-theme', theme);
-  }, [theme]);
+  }, [isThemeReady, theme]);
+
+  useEffect(() => {
+    setIsWorkspaceSettingsOpen(isWorksettingsRoute);
+
+    if (isWorksettingsRoute) {
+      setIsTopNavOpen(false);
+      setIsLeftRailOpen(false);
+      setWorkspaceSettingsTab('manage');
+    }
+  }, [isWorksettingsRoute]);
 
   useEffect(() => {
     if (!selectedWorkspaceId) {
-      setIsWorkspaceSettingsOpen(false);
+      setMutedMemberIds([]);
+      return;
+    }
+
+    const key = `worknext-muted-members-${selectedWorkspaceId}`;
+    const saved = window.localStorage.getItem(key);
+
+    if (!saved) {
+      setMutedMemberIds([]);
+      return;
+    }
+
+    try {
+      const parsed = JSON.parse(saved);
+      if (Array.isArray(parsed)) {
+        setMutedMemberIds(parsed.filter((candidate): candidate is string => typeof candidate === 'string'));
+      } else {
+        setMutedMemberIds([]);
+      }
+    } catch {
+      setMutedMemberIds([]);
     }
   }, [selectedWorkspaceId]);
+
+  useEffect(() => {
+    if (!selectedWorkspaceId) {
+      return;
+    }
+
+    window.localStorage.setItem(
+      `worknext-muted-members-${selectedWorkspaceId}`,
+      JSON.stringify(mutedMemberIds),
+    );
+  }, [mutedMemberIds, selectedWorkspaceId]);
 
   useEffect(() => {
     setActiveThreadMessageId(null);
@@ -166,6 +236,11 @@ export default function HomePage() {
 
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
+        if (isWorksettingsRoute) {
+          router.push('/');
+          return;
+        }
+
         setIsWorkspaceSettingsOpen(false);
       }
     };
@@ -173,7 +248,63 @@ export default function HomePage() {
     window.addEventListener('keydown', handleKeyDown);
 
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isWorkspaceSettingsOpen]);
+  }, [isWorksettingsRoute, isWorkspaceSettingsOpen, router]);
+
+  useEffect(() => {
+    if (!isLeftRailOpen) {
+      return;
+    }
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setIsLeftRailOpen(false);
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isLeftRailOpen]);
+
+  useEffect(() => {
+    if (!isTopNavOpen) {
+      return;
+    }
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setIsTopNavOpen(false);
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isTopNavOpen]);
+
+  useEffect(() => {
+    if (!isTopNavOpen) {
+      return;
+    }
+
+    const handlePointerDown = (event: MouseEvent) => {
+      const target = event.target;
+
+      if (!(target instanceof Node)) {
+        return;
+      }
+
+      if (topNavTriggerRef.current?.contains(target) || topNavDrawerRef.current?.contains(target)) {
+        return;
+      }
+
+      setIsTopNavOpen(false);
+    };
+
+    window.addEventListener('mousedown', handlePointerDown);
+
+    return () => window.removeEventListener('mousedown', handlePointerDown);
+  }, [isTopNavOpen]);
 
   useEffect(() => {
     if (accessToken || refreshAttempted) {
@@ -201,6 +332,10 @@ export default function HomePage() {
     enabled: Boolean(accessToken),
     retry: false,
   });
+
+  useEffect(() => {
+    setProfileDisplayName(meQuery.data?.displayName ?? '');
+  }, [meQuery.data?.displayName]);
 
   useEffect(() => {
     if (!meQuery.error) {
@@ -520,6 +655,26 @@ export default function HomePage() {
     onSettled: () => {
       clearSession();
       void queryClient.clear();
+    },
+  });
+
+  const updateProfileMutation = useMutation({
+    mutationFn: (displayName: string) =>
+      apiRequest<AuthUser>('/auth/profile', {
+        method: 'PATCH',
+        accessToken,
+        body: {
+          displayName,
+        },
+      }),
+    onSuccess: (updatedUser) => {
+      queryClient.setQueryData<AuthUser>(['me', accessToken], updatedUser);
+      void queryClient.invalidateQueries({ queryKey: ['me'] });
+      setProfileDisplayName(updatedUser.displayName);
+      setErrorMessage(null);
+    },
+    onError: (error) => {
+      setErrorMessage(getErrorMessage(error));
     },
   });
 
@@ -1692,186 +1847,322 @@ export default function HomePage() {
     addReactionMutation.mutate({ messageId: message.id, emoji });
   }
 
+  function openWorkspaceSettingsPage() {
+    setIsTopNavOpen(false);
+    setWorkspaceSettingsTab('manage');
+    if (!isWorksettingsRoute) {
+      router.push('/worksettings');
+    }
+  }
+
+  function closeWorkspaceSettingsPage() {
+    router.push('/');
+  }
+
+  function handleComposerResizeStart(event: React.PointerEvent<HTMLButtonElement>) {
+    if (event.button !== 0 || !event.isPrimary) {
+      return;
+    }
+
+    event.preventDefault();
+
+    event.currentTarget.setPointerCapture(event.pointerId);
+
+    composerResizeRef.current = {
+      startY: event.clientY,
+      startHeight: composerInputRef.current?.getBoundingClientRect().height ?? composerInputHeight,
+      pointerId: event.pointerId,
+    };
+
+    document.body.style.userSelect = 'none';
+    document.body.style.cursor = 'ns-resize';
+  }
+
+  function handleComposerResizeMove(event: React.PointerEvent<HTMLButtonElement>) {
+    const context = composerResizeRef.current;
+
+    if (!context || context.pointerId !== event.pointerId) {
+      return;
+    }
+
+    event.preventDefault();
+
+    const delta = context.startY - event.clientY;
+    const nextHeight = Math.min(
+      COMPOSER_MAX_HEIGHT_PX,
+      Math.max(COMPOSER_MIN_HEIGHT_PX, context.startHeight + delta),
+    );
+
+    setComposerInputHeight(nextHeight);
+  }
+
+  function handleComposerResizeEnd(event: React.PointerEvent<HTMLButtonElement>) {
+    const context = composerResizeRef.current;
+
+    if (!context || context.pointerId !== event.pointerId) {
+      return;
+    }
+
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+
+    composerResizeRef.current = null;
+    document.body.style.userSelect = '';
+    document.body.style.cursor = '';
+  }
+
   return (
-    <main className="workspace-shell">
-      <aside className="workspace-rail brand-rail">
-        <div>
-          <p className="eyebrow">Local MVP</p>
-          <h1>WorkNext</h1>
-          <p className="rail-copy">
-            {meQuery.data ? `Signed in as ${meQuery.data.displayName}` : 'Loading your session…'}
-          </p>
-        </div>
+    <main className={isWorksettingsRoute ? 'workspace-shell worksettings-route' : 'workspace-shell'}>
+      <button
+        ref={topNavTriggerRef}
+        className={isTopNavOpen ? 'ghost-button top-nav-trigger open' : 'ghost-button top-nav-trigger'}
+        type="button"
+        data-testid="top-nav-trigger"
+        onClick={() => setIsTopNavOpen((current) => !current)}
+        aria-label="Toggle top navigation"
+        aria-expanded={isTopNavOpen}
+      >
+        <TopBarIcon />
+      </button>
 
-        <div className="status-panel">
-          <span>Mode</span>
-          <strong>File-backed runtime</strong>
-          <span>Auth</span>
-          <strong>JWT + refresh cookie</strong>
-        </div>
+      <button
+        className="ghost-button left-rail-trigger"
+        type="button"
+        data-testid="left-rail-trigger"
+        onClick={() => setIsLeftRailOpen(true)}
+        aria-label="Open workspace drawer"
+      >
+        <DrawerIcon />
+      </button>
 
-        <button className="ghost-button" type="button" onClick={() => logoutMutation.mutate()}>
-          Sign out
-        </button>
+      <button
+        type="button"
+        className={isLeftRailOpen ? 'left-rail-overlay open' : 'left-rail-overlay'}
+        aria-label="Close workspace drawer"
+        onClick={() => setIsLeftRailOpen(false)}
+      />
 
-        {currentWorkspace ? (
-          <button
-            className="ghost-button"
-            type="button"
-            onClick={() => leaveWorkspaceMutation.mutate()}
-            disabled={currentWorkspace.role === 'OWNER' || leaveWorkspaceMutation.isPending}
-          >
-            {currentWorkspace.role === 'OWNER' ? 'Owner cannot leave' : 'Leave workspace'}
-          </button>
-        ) : null}
-      </aside>
+      <aside className={isLeftRailOpen ? 'left-rail-drawer open' : 'left-rail-drawer'}>
+        <div className="left-rail-drawer-shell">
+          <aside className="workspace-rail brand-rail">
+            <div>
+              <p className="eyebrow">Local MVP</p>
+              <h1>WorkNext</h1>
+              <p className="rail-copy">
+                {meQuery.data ? `Signed in as ${meQuery.data.displayName}` : 'Loading your session…'}
+              </p>
 
-      <aside className="workspace-rail sidebar-panel">
-        <section className="sidebar-section">
-          <div className="section-header">
-            <h2>Workspaces</h2>
-            <span>{workspacesQuery.data?.length ?? 0}</span>
-          </div>
-
-          <div className="workspace-list">
-            {workspacesQuery.data?.map((workspace) => (
-              <button
-                key={workspace.id}
-                type="button"
-                data-testid="workspace-item"
-                className={workspace.id === selectedWorkspaceId ? 'list-item group active' : 'list-item group'}
-                onClick={() => {
-                  setSelectedWorkspaceId(workspace.id);
-                  setSelectedChannelId(null);
+              <form
+                className="compact-form stacked"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  updateProfileMutation.mutate(profileDisplayName.trim());
                 }}
               >
-                <strong>{workspace.name}</strong>
-                <span>{workspace.role.toLowerCase()}</span>
-              </button>
-            ))}
-          </div>
+                <label className="field compact-field" htmlFor="left-rail-display-name-input">
+                  <span>Display name</span>
+                  <input
+                    id="left-rail-display-name-input"
+                    data-testid="left-rail-display-name-input"
+                    value={profileDisplayName}
+                    onChange={(event) => setProfileDisplayName(event.target.value)}
+                    minLength={2}
+                    maxLength={60}
+                    required
+                  />
+                </label>
 
-          <form
-            className="compact-form"
-            onSubmit={(event) => {
-              event.preventDefault();
-              createWorkspaceMutation.mutate(workspaceName);
-            }}
-          >
-            <input
-              data-testid="create-workspace-input"
-              placeholder="New workspace name"
-              value={workspaceName}
-              onChange={(event) => setWorkspaceName(event.target.value)}
-              minLength={2}
-              required
-            />
-            <button className="primary-button" data-testid="create-workspace-button" type="submit" disabled={createWorkspaceMutation.isPending}>
-              Create
+                <button
+                  className="primary-button"
+                  data-testid="left-rail-save-display-name-button"
+                  type="submit"
+                  disabled={
+                    updateProfileMutation.isPending ||
+                    !profileDisplayName.trim() ||
+                    profileDisplayName.trim() === (meQuery.data?.displayName ?? '')
+                  }
+                >
+                  {updateProfileMutation.isPending ? 'Saving…' : 'Save display name'}
+                </button>
+              </form>
+            </div>
+
+            <div className="status-panel">
+              <span>Mode</span>
+              <strong>File-backed runtime</strong>
+              <span>Auth</span>
+              <strong>JWT + refresh cookie</strong>
+            </div>
+
+            <button className="ghost-button" type="button" onClick={() => logoutMutation.mutate()}>
+              Sign out
             </button>
-          </form>
 
-          <form
-            className="compact-form stacked"
-            onSubmit={(event) => {
-              event.preventDefault();
-              acceptInvitationMutation.mutate(acceptInviteToken);
-            }}
-          >
-            <input
-              data-testid="accept-invitation-input"
-              placeholder="Accept invitation token"
-              value={acceptInviteToken}
-              onChange={(event) => setAcceptInviteToken(event.target.value)}
-              minLength={8}
-              required
-            />
-            <button className="ghost-button" data-testid="accept-invitation-button" type="submit" disabled={acceptInvitationMutation.isPending}>
-              Join workspace
-            </button>
-          </form>
-        </section>
-
-        <section className="sidebar-section">
-          <div className="section-header">
-            <h2>Channels</h2>
-            <span>{channelsQuery.data?.length ?? 0}</span>
-          </div>
-
-          <div className="workspace-list">
-            {channelsQuery.data?.map((channel) => (
+            {currentWorkspace ? (
               <button
-                key={channel.id}
+                className="ghost-button"
                 type="button"
-                data-testid="channel-item"
-                className={channel.id === selectedChannelId ? 'list-item group active' : 'list-item group'}
-                onClick={() => setSelectedChannelId(channel.id)}
+                onClick={() => leaveWorkspaceMutation.mutate()}
+                disabled={currentWorkspace.role === 'OWNER' || leaveWorkspaceMutation.isPending}
               >
-                <div className="channel-heading">
-                  <strong>#{channel.name}</strong>
-                  <div className="channel-badges">
-                    {channel.type === 'PRIVATE' ? <span className="type-badge private">private</span> : null}
-                    {channel.unreadCount > 0 ? <span className="count-badge">{channel.unreadCount}</span> : null}
-                  </div>
-                </div>
-                <span>{channel.description ?? (channel.type === 'PRIVATE' ? 'Private channel' : 'Public channel')}</span>
+                {currentWorkspace.role === 'OWNER' ? 'Owner cannot leave' : 'Leave workspace'}
               </button>
-            ))}
-          </div>
+            ) : null}
+          </aside>
 
-          {selectedWorkspaceId ? (
-            <form
-              className="compact-form stacked"
-              onSubmit={(event) => {
-                event.preventDefault();
-                createChannelMutation.mutate({
-                  name: channelForm.name,
-                  description: channelForm.description,
-                  type: channelForm.type,
-                });
-              }}
-            >
-              <input
-                data-testid="create-channel-name-input"
-                placeholder="Channel name"
-                value={channelForm.name}
-                onChange={(event) =>
-                  setChannelForm((current) => ({ ...current, name: event.target.value }))
-                }
-                minLength={2}
-                required
-              />
-              <input
-                data-testid="create-channel-description-input"
-                placeholder="Description"
-                value={channelForm.description}
-                onChange={(event) =>
-                  setChannelForm((current) => ({ ...current, description: event.target.value }))
-                }
-              />
-              <select
-                data-testid="create-channel-type-select"
-                value={channelForm.type}
-                onChange={(event) =>
-                  setChannelForm((current) => ({
-                    ...current,
-                    type: event.target.value as 'PUBLIC' | 'PRIVATE',
-                  }))
-                }
+          <aside className="workspace-rail sidebar-panel">
+            <section className="sidebar-section">
+              <div className="section-header">
+                <h2>Workspaces</h2>
+                <span>{workspacesQuery.data?.length ?? 0}</span>
+              </div>
+
+              <div className="workspace-list">
+                {workspacesQuery.data?.map((workspace) => (
+                  <button
+                    key={workspace.id}
+                    type="button"
+                    data-testid="workspace-item"
+                    className={workspace.id === selectedWorkspaceId ? 'list-item group active' : 'list-item group'}
+                    onClick={() => {
+                      setSelectedWorkspaceId(workspace.id);
+                      setSelectedChannelId(null);
+                      setIsLeftRailOpen(false);
+                    }}
+                  >
+                    <strong>{workspace.name}</strong>
+                    <span>{workspace.role.toLowerCase()}</span>
+                  </button>
+                ))}
+              </div>
+
+              <form
+                className="compact-form"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  createWorkspaceMutation.mutate(workspaceName);
+                }}
               >
-                <option value="PUBLIC">public</option>
-                {canManageWorkspace ? <option value="PRIVATE">private</option> : null}
-              </select>
-              <button className="primary-button" data-testid="create-channel-button" type="submit" disabled={createChannelMutation.isPending}>
-                Add channel
-              </button>
-            </form>
-          ) : null}
-        </section>
+                <input
+                  data-testid="create-workspace-input"
+                  placeholder="New workspace name"
+                  value={workspaceName}
+                  onChange={(event) => setWorkspaceName(event.target.value)}
+                  minLength={2}
+                  required
+                />
+                <button className="primary-button" data-testid="create-workspace-button" type="submit" disabled={createWorkspaceMutation.isPending}>
+                  Create
+                </button>
+              </form>
+
+              <form
+                className="compact-form stacked"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  acceptInvitationMutation.mutate(acceptInviteToken);
+                }}
+              >
+                <input
+                  data-testid="accept-invitation-input"
+                  placeholder="Accept invitation token"
+                  value={acceptInviteToken}
+                  onChange={(event) => setAcceptInviteToken(event.target.value)}
+                  minLength={8}
+                  required
+                />
+                <button className="ghost-button" data-testid="accept-invitation-button" type="submit" disabled={acceptInvitationMutation.isPending}>
+                  Join workspace
+                </button>
+              </form>
+            </section>
+
+            <section className="sidebar-section">
+              <div className="section-header">
+                <h2>Channels</h2>
+                <span>{channelsQuery.data?.length ?? 0}</span>
+              </div>
+
+              <div className="workspace-list">
+                {channelsQuery.data?.map((channel) => (
+                  <button
+                    key={channel.id}
+                    type="button"
+                    data-testid="channel-item"
+                    className={channel.id === selectedChannelId ? 'list-item group active' : 'list-item group'}
+                    onClick={() => {
+                      setSelectedChannelId(channel.id);
+                      setIsLeftRailOpen(false);
+                    }}
+                  >
+                    <div className="channel-heading">
+                      <strong>#{channel.name}</strong>
+                      <div className="channel-badges">
+                        {channel.type === 'PRIVATE' ? <span className="type-badge private">private</span> : null}
+                        {channel.unreadCount > 0 ? <span className="count-badge">{channel.unreadCount}</span> : null}
+                      </div>
+                    </div>
+                    <span>{channel.description ?? (channel.type === 'PRIVATE' ? 'Private channel' : 'Public channel')}</span>
+                  </button>
+                ))}
+              </div>
+
+              {selectedWorkspaceId ? (
+                <form
+                  className="compact-form stacked"
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    createChannelMutation.mutate({
+                      name: channelForm.name,
+                      description: channelForm.description,
+                      type: channelForm.type,
+                    });
+                  }}
+                >
+                  <input
+                    data-testid="create-channel-name-input"
+                    placeholder="Channel name"
+                    value={channelForm.name}
+                    onChange={(event) =>
+                      setChannelForm((current) => ({ ...current, name: event.target.value }))
+                    }
+                    minLength={2}
+                    required
+                  />
+                  <input
+                    data-testid="create-channel-description-input"
+                    placeholder="Description"
+                    value={channelForm.description}
+                    onChange={(event) =>
+                      setChannelForm((current) => ({ ...current, description: event.target.value }))
+                    }
+                  />
+                  <select
+                    data-testid="create-channel-type-select"
+                    value={channelForm.type}
+                    onChange={(event) =>
+                      setChannelForm((current) => ({
+                        ...current,
+                        type: event.target.value as 'PUBLIC' | 'PRIVATE',
+                      }))
+                    }
+                  >
+                    <option value="PUBLIC">public</option>
+                    {canManageWorkspace ? <option value="PRIVATE">private</option> : null}
+                  </select>
+                  <button className="primary-button" data-testid="create-channel-button" type="submit" disabled={createChannelMutation.isPending}>
+                    Add channel
+                  </button>
+                </form>
+              ) : null}
+            </section>
+          </aside>
+        </div>
       </aside>
 
       <section className="conversation-panel">
-        <header className="conversation-header">
+        <header ref={topNavDrawerRef} className={isTopNavOpen ? 'top-nav-drawer open' : 'top-nav-drawer'}>
           <div>
             <p className="eyebrow">Workspace</p>
             <h2>{currentWorkspace?.name ?? 'Create your first workspace'}</h2>
@@ -1881,7 +2172,7 @@ export default function HomePage() {
                 : 'Select a channel to begin chatting'}
             </p>
           </div>
-          <div className="conversation-header-actions">
+          <div className="top-nav-drawer-actions">
             <div className="search-controls">
               <input
                 className="search-input"
@@ -1919,7 +2210,7 @@ export default function HomePage() {
               className="ghost-button workspace-settings-trigger"
               data-testid="workspace-settings-trigger"
               type="button"
-              onClick={() => setIsWorkspaceSettingsOpen(true)}
+              onClick={openWorkspaceSettingsPage}
               disabled={!selectedWorkspaceId}
             >
               <span className="workspace-settings-trigger-icon" aria-hidden="true">
@@ -2284,6 +2575,18 @@ export default function HomePage() {
             });
           }}
         >
+          <button
+            className="composer-resize-handle"
+            type="button"
+            aria-label="Resize message input"
+            title="Drag up or down to resize input"
+            onPointerDown={handleComposerResizeStart}
+            onPointerMove={handleComposerResizeMove}
+            onPointerUp={handleComposerResizeEnd}
+            onPointerCancel={handleComposerResizeEnd}
+            onDoubleClick={() => setComposerInputHeight(COMPOSER_MIN_HEIGHT_PX)}
+          />
+
           {typingUsers.length > 0 ? (
             <p className="typing-indicator">{typingUsers.join(', ')} typing…</p>
           ) : null}
@@ -2308,65 +2611,98 @@ export default function HomePage() {
             </div>
           ) : null}
 
-          <textarea
-            data-testid="composer-input"
-            placeholder={currentChannel ? `Message #${currentChannel.name}` : 'Select a channel first'}
-            value={messageDraft}
-            onChange={(event) => setMessageDraft(event.target.value)}
-            disabled={!currentChannel}
-            required
-          />
-          <label className="upload-field">
-            <span>{isUploadingAttachments ? 'Uploading attachments…' : 'Attach files'}</span>
-            <input
-              type="file"
-              multiple
-              onChange={(event) => {
-                void handleAttachmentSelection(event.target.files);
-                event.target.value = '';
-              }}
-              disabled={!currentChannel || isUploadingAttachments}
+          <div className="composer-input-row">
+            <textarea
+              ref={composerInputRef}
+              className="composer-input"
+              data-testid="composer-input"
+              placeholder={currentChannel ? `Message #${currentChannel.name}` : 'Select a channel first'}
+              value={messageDraft}
+              style={{ height: `${composerInputHeight}px` }}
+              onChange={(event) => setMessageDraft(event.target.value)}
+              disabled={!currentChannel}
+              required
             />
-          </label>
-          <button
-            className="primary-button"
-            data-testid="send-message-button"
-            type="submit"
-            disabled={!currentChannel || sendMessageMutation.isPending || isUploadingAttachments}
-          >
-            Send message
-          </button>
+
+            <div className="composer-end-actions">
+              <label
+                className={
+                  !currentChannel || isUploadingAttachments
+                    ? 'composer-icon-button attach pending disabled'
+                    : 'composer-icon-button attach'
+                }
+                aria-label={isUploadingAttachments ? 'Uploading attachments' : 'Attach files'}
+              >
+                <AttachIcon />
+                <input
+                  type="file"
+                  multiple
+                  onChange={(event) => {
+                    void handleAttachmentSelection(event.target.files);
+                    event.target.value = '';
+                  }}
+                  disabled={!currentChannel || isUploadingAttachments}
+                />
+              </label>
+
+              <button
+                className="composer-icon-button send"
+                data-testid="send-message-button"
+                type="submit"
+                aria-label="Send message"
+                disabled={!currentChannel || sendMessageMutation.isPending || isUploadingAttachments}
+              >
+                <SendIcon />
+              </button>
+            </div>
+          </div>
         </form>
 
-        {selectedWorkspaceId ? (
+        {selectedWorkspaceId && isWorkspaceSettingsOpen ? (
           <>
-            <button
-              type="button"
-              className={isWorkspaceSettingsOpen ? 'workspace-settings-overlay open' : 'workspace-settings-overlay'}
-              aria-label="Close workspace settings"
-              onClick={() => setIsWorkspaceSettingsOpen(false)}
-            />
-
-            <aside className={isWorkspaceSettingsOpen ? 'workspace-settings-drawer open' : 'workspace-settings-drawer'}>
+            <aside className="workspace-settings-drawer open">
               <div className="workspace-settings-header">
                 <div>
                   <p className="eyebrow">Workspace settings</p>
                   <h3>{currentWorkspace?.name ?? 'Workspace options'}</h3>
                   <p className="workspace-settings-copy">
-                    Manage members, notifications, invitations, and private channel access without squeezing the chat timeline.
+                    Manage users and collaboration controls in a dedicated settings page, then switch to analytics when needed.
                   </p>
+
+                  <div className="workspace-settings-tabs" role="tablist" aria-label="Workspace settings sections">
+                    <button
+                      className={workspaceSettingsTab === 'manage' ? 'workspace-settings-tab active' : 'workspace-settings-tab'}
+                      type="button"
+                      role="tab"
+                      aria-selected={workspaceSettingsTab === 'manage'}
+                      onClick={() => setWorkspaceSettingsTab('manage')}
+                    >
+                      Manage users
+                    </button>
+                    <button
+                      className={workspaceSettingsTab === 'analytics' ? 'workspace-settings-tab active' : 'workspace-settings-tab'}
+                      type="button"
+                      role="tab"
+                      aria-selected={workspaceSettingsTab === 'analytics'}
+                      onClick={() => setWorkspaceSettingsTab('analytics')}
+                    >
+                      Analytics
+                    </button>
+                  </div>
                 </div>
                 <button
                   className="ghost-button workspace-settings-close"
                   type="button"
-                  onClick={() => setIsWorkspaceSettingsOpen(false)}
-                  aria-label="Close workspace settings"
+                  onClick={closeWorkspaceSettingsPage}
+                  aria-label="Back to chat"
                 >
                   <CloseIcon />
                 </button>
               </div>
 
               <section className="collaboration-grid workspace-settings-grid">
+                {workspaceSettingsTab === 'manage' ? (
+                  <>
                 <article className="info-card">
                   <div className="section-header">
                     <h3>Channel members</h3>
@@ -2594,7 +2930,6 @@ export default function HomePage() {
                               setSelectedChannelId(notification.channelId);
                             }
                             markNotificationReadMutation.mutate(notification.id);
-                            setIsWorkspaceSettingsOpen(false);
                           }}
                         >
                           <strong>{notification.title}</strong>
@@ -2649,6 +2984,22 @@ export default function HomePage() {
                             ) : (
                               <span className="role-label">{member.role.toLowerCase()}</span>
                             )}
+
+                            {!member.isCurrentUser ? (
+                              <button
+                                className={mutedMemberIds.includes(member.userId) ? 'ghost-button active-chip' : 'ghost-button'}
+                                type="button"
+                                onClick={() =>
+                                  setMutedMemberIds((current) =>
+                                    current.includes(member.userId)
+                                      ? current.filter((candidate) => candidate !== member.userId)
+                                      : [...current, member.userId],
+                                  )
+                                }
+                              >
+                                {mutedMemberIds.includes(member.userId) ? 'Unmute member' : 'Mute member'}
+                              </button>
+                            ) : null}
 
                             {canRemoveMember(currentWorkspace?.role, member) ? (
                               <button
@@ -2737,7 +3088,47 @@ export default function HomePage() {
                   </div>
                 </article>
 
-                {currentWorkspaceCanManage(currentWorkspaceRole) ? (
+                <article className="info-card">
+                  <div className="section-header">
+                    <h3>Muted members</h3>
+                    <span>{mutedMemberIds.length}</span>
+                  </div>
+
+                  {mutedMemberIds.length > 0 ? (
+                    <div className="member-list">
+                      {membersQuery.data
+                        ?.filter((member) => mutedMemberIds.includes(member.userId))
+                        .map((member) => (
+                          <div className="member-row" key={member.userId}>
+                            <div>
+                              <strong>{member.displayName}</strong>
+                              <span>{member.email}</span>
+                            </div>
+                            <div className="member-actions">
+                              <button
+                                className="ghost-button"
+                                type="button"
+                                onClick={() =>
+                                  setMutedMemberIds((current) =>
+                                    current.filter((candidate) => candidate !== member.userId),
+                                  )
+                                }
+                              >
+                                Unmute member
+                              </button>
+                            </div>
+                          </div>
+                        ))}
+                    </div>
+                  ) : (
+                    <p className="muted-copy">No muted members in this workspace.</p>
+                  )}
+                </article>
+
+                  </>
+                ) : null}
+
+                {workspaceSettingsTab === 'analytics' && currentWorkspaceCanManage(currentWorkspaceRole) ? (
                   <article className="info-card organization-card" data-testid="organization-admin-card">
                     <div className="section-header">
                       <h3>Organization</h3>
@@ -2831,7 +3222,7 @@ export default function HomePage() {
                   </article>
                 ) : null}
 
-                {currentWorkspaceCanManage(currentWorkspaceRole) ? (
+                {workspaceSettingsTab === 'analytics' && currentWorkspaceCanManage(currentWorkspaceRole) ? (
                   <article className="info-card analytics-card" data-testid="workspace-analytics-card">
                     <div className="section-header">
                       <h3>Analytics</h3>
@@ -2903,7 +3294,7 @@ export default function HomePage() {
                   </article>
                 ) : null}
 
-                {currentWorkspaceCanManage(currentWorkspaceRole) ? (
+                {workspaceSettingsTab === 'analytics' && currentWorkspaceCanManage(currentWorkspaceRole) ? (
                   <article className="info-card">
                     <div className="section-header">
                       <h3>Audit trail</h3>
@@ -3173,6 +3564,43 @@ function CloseIcon() {
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <path d="M18 6 6 18" />
       <path d="m6 6 12 12" />
+    </svg>
+  );
+}
+
+function DrawerIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M4 7h16" />
+      <path d="M4 12h16" />
+      <path d="M4 17h16" />
+    </svg>
+  );
+}
+
+function TopBarIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <rect x="4" y="5" width="16" height="4" rx="1.5" />
+      <path d="M8 13h8" />
+      <path d="m10 17 2 2 2-2" />
+    </svg>
+  );
+}
+
+function AttachIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M21.4 11.2 12 20.6a6 6 0 1 1-8.5-8.5l9.4-9.4a4 4 0 1 1 5.7 5.7l-9.5 9.5a2 2 0 1 1-2.8-2.8l8.5-8.5" />
+    </svg>
+  );
+}
+
+function SendIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M3 11.5 21 3l-8.5 18-2.3-7.2L3 11.5Z" />
+      <path d="M10.2 13.8 21 3" />
     </svg>
   );
 }
